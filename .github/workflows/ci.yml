@@ -58,6 +58,10 @@ jobs:
             os: macos-latest
             archive: lan-file-browser-macos-aarch64
             ext: .tar.gz
+          - name: Linux x86_64
+            os: ubuntu-latest
+            archive: lan-file-browser-linux-x86_64
+            ext: .tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -165,5 +169,6 @@ jobs:
             | Windows (x86_64) | `lan-file-browser-windows-x86_64-*.zip` |
             | macOS (Intel) | `lan-file-browser-macos-x86_64-*.tar.gz` |
             | macOS (Apple Silicon M1/M2/M3) | `lan-file-browser-macos-aarch64-*.tar.gz` |
+            | Linux (x86_64) | `lan-file-browser-linux-x86_64-*.tar.gz` |
 
             解压后直接运行，无需安装 Python。/ Extract and run directly, no Python required.

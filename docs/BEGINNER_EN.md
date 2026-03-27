@@ -9,6 +9,7 @@
 > **Shortcut**: Don't want to install Python? Download from [Releases](https://github.com/bbyybb/lan-file-browser/releases) and skip Steps 1-3 below.
 > - **Windows**: Download `FileBrowser.exe`, double-click to run
 > - **macOS**: Download `FileBrowser-macOS-*`, open Terminal and run `cd ~/Downloads && chmod +x FileBrowser* && ./FileBrowser*`
+> - **Linux**: Download `FileBrowser-Linux`, open Terminal and run `cd ~/Downloads && chmod +x FileBrowser* && ./FileBrowser*`
 
 ---
 

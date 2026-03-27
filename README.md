@@ -43,9 +43,10 @@
 - **Windows**：下载 `FileBrowser.exe`，双击运行
 - **macOS Intel**：下载 `FileBrowser-macOS-Intel`
 - **macOS Apple M 系列**：下载 `FileBrowser-macOS-AppleSilicon`
+- **Linux x86_64**：下载 `FileBrowser-Linux`
 
-macOS 使用方法（3 步）：
-1. 打开「终端」（启动台 → 其他 → 终端，或 Spotlight 搜索"终端"）
+macOS / Linux 使用方法（3 步）：
+1. 打开「终端」（macOS: 启动台 → 其他 → 终端；Linux: Ctrl+Alt+T）
 2. 进入下载目录：`cd ~/Downloads`
 3. 添加执行权限并运行：`chmod +x FileBrowser* && ./FileBrowser*`
 

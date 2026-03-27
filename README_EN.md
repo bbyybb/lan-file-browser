@@ -43,9 +43,10 @@ Download from the [Releases](https://github.com/bbyybb/lan-file-browser/releases
 - **Windows**: Download `FileBrowser.exe`, double-click to run
 - **macOS Intel**: Download `FileBrowser-macOS-Intel`
 - **macOS Apple Silicon**: Download `FileBrowser-macOS-AppleSilicon`
+- **Linux x86_64**: Download `FileBrowser-Linux`
 
-macOS instructions (3 steps):
-1. Open **Terminal** (Launchpad → Other → Terminal, or Spotlight search "Terminal")
+macOS / Linux instructions (3 steps):
+1. Open **Terminal** (macOS: Launchpad → Other → Terminal; Linux: Ctrl+Alt+T)
 2. Navigate to downloads: `cd ~/Downloads`
 3. Add execute permission and run: `chmod +x FileBrowser* && ./FileBrowser*`
 

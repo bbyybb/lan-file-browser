@@ -9,6 +9,7 @@
 > **快捷方式**：如果不想安装 Python，可以直接从 [Releases](https://github.com/bbyybb/lan-file-browser/releases) 下载可执行文件，跳过下面的第一步到第三步。
 > - **Windows**：下载 `FileBrowser.exe`，双击运行
 > - **macOS**：下载 `FileBrowser-macOS-*`，打开终端执行 `cd ~/Downloads && chmod +x FileBrowser* && ./FileBrowser*`
+> - **Linux**：下载 `FileBrowser-Linux`，打开终端执行 `cd ~/Downloads && chmod +x FileBrowser* && ./FileBrowser*`
 
 ---
 
