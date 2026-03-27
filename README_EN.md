@@ -15,13 +15,18 @@ Supports file preview, editing, upload/download, search, copy/move, ZIP extracti
 
 <!-- Program Interface Screenshots -->
 <p align="center">
-  <img src="docs/screenshot_login_en.png" width="270" alt="Login Page">
-  <img src="docs/screenshot_light_en.png" width="270" alt="Light Theme">
-  <img src="docs/screenshot_dark_en.png" width="270" alt="Dark Theme">
+  <img src="docs/screenshot_login_en.png" width="260" alt="Login Page">&nbsp;
+  <img src="docs/screenshot_light_en.png" width="260" alt="Light Theme">&nbsp;
+  <img src="docs/screenshot_dark_en.png" width="260" alt="Dark Theme">
 </p>
 <p align="center">
-  <img src="docs/screenshot_mobile_en.png" width="270" alt="Mobile Browser">
-  <img src="docs/screenshot_preview_en.png" width="270" alt="File Preview">
+  <img src="docs/screenshot_mobile_en.png" width="260" alt="Mobile Browser">&nbsp;
+  <img src="docs/screenshot_preview_en.png" width="260" alt="File Preview">&nbsp;
+  <img src="docs/screenshot_office_docx_en.png" width="260" alt="Office Document Preview">
+</p>
+<p align="center">
+  <img src="docs/screenshot_office_xlsx_en.png" width="260" alt="Excel Preview">&nbsp;
+  <img src="docs/terminal_en.png" width="540" alt="Terminal Startup">
 </p>
 
 ---
@@ -341,16 +346,8 @@ If this project is helpful to you, feel free to buy the author a coffee ☕
 
 如果这个项目对你有帮助，欢迎请作者喝杯咖啡 ☕
 
-### WeChat & Alipay
+| WeChat Pay | Alipay | Buy Me a Coffee |
+|:---:|:---:|:---:|
+| <img src="docs/wechat_pay.jpg" width="200" alt="WeChat Pay QR Code"> | <img src="docs/alipay.jpg" width="200" alt="Alipay QR Code"> | <a href="https://www.buymeacoffee.com/bbyybb"><img src="docs/bmc_qr.png" width="170" alt="Buy Me a Coffee"></a> |
 
-| WeChat Pay | Alipay |
-|:---:|:---:|
-| <img src="docs/wechat_pay.jpg" width="220" alt="WeChat Pay QR Code"> | <img src="docs/alipay.jpg" width="220" alt="Alipay QR Code"> |
-
-### International
-
-<a href="https://www.buymeacoffee.com/bbyybb"><img src="docs/bmc_qr.png" width="180" alt="Buy Me a Coffee"></a>
-
-**☕ Buy Me a Coffee**
-
-- 💖 **GitHub Sponsors**: https://github.com/sponsors/bbyybb/
+[buymeacoffee.com/bbyybb](https://www.buymeacoffee.com/bbyybb) | [GitHub Sponsors](https://github.com/sponsors/bbyybb/)

@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  attribution-check:
+    name: Attribution integrity check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify donation files integrity
+        run: |
+          FAIL=0
+
+          check_hash() {
+            local file="$1" expected="$2"
+            if [ ! -f "$file" ]; then echo "FAIL: $file missing"; FAIL=1; return; fi
+            actual=$(sha256sum "$file" | cut -d' ' -f1)
+            if [ "$actual" != "$expected" ]; then echo "FAIL: $file tampered"; FAIL=1; else echo "OK: $file"; fi
+          }
+
+          check_hash "docs/wechat_pay.jpg" "686b9d5bba59d6831580984cb93804543f346d943f2baf4a94216fd13438f1e6"
+          check_hash "docs/alipay.jpg" "510155042b703d23f7eeabc04496097a7cc13772c5712c8d0716bab5962172dd"
+          check_hash "docs/bmc_qr.png" "bfd20ef305007c3dacf30dde49ce8f0fe4d7ac3ffcc86ac1f83bc1e75cccfcd6"
+
+          for m in "buymeacoffee.com/bbyybb" "sponsors/bbyybb" "wechat_pay.jpg" "alipay.jpg"; do
+            if ! grep -q "$m" README.md; then echo "FAIL: README.md missing: $m"; FAIL=1; fi
+          done
+
+          if [ $FAIL -ne 0 ]; then
+            echo ""; echo "Author attribution files have been modified."; exit 1
+          fi
+          echo "All checks passed."
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: attribution-check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86_64
+            os: windows-latest
+            archive: lan-file-browser-windows-x86_64
+            ext: .zip
+          - name: macOS Intel
+            os: macos-13
+            archive: lan-file-browser-macos-x86_64
+            ext: .tar.gz
+          - name: macOS Apple Silicon
+            os: macos-latest
+            archive: lan-file-browser-macos-aarch64
+            ext: .tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pyinstaller flask
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          # 收集 docs/ 下所有文件作为嵌入资源
+          ADD_DATA_ARGS=""
+          SEP=":"
+          if [[ "${{ matrix.os }}" == windows* ]]; then SEP=";"; fi
+          for f in docs/*; do
+            [ -f "$f" ] && ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data ${f}${SEP}docs"
+          done
+          ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data README.md${SEP}."
+          ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data stop_server.bat${SEP}."
+          ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data stop_server.sh${SEP}."
+
+          pyinstaller --onefile --clean --noconfirm \
+            --name lan-file-browser \
+            --hidden-import flask \
+            $ADD_DATA_ARGS \
+            file_browser.py
+
+      - name: Verify binary runs
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == windows* ]]; then
+            timeout 5 dist/lan-file-browser.exe --help 2>&1 || true
+          else
+            chmod +x dist/lan-file-browser
+            timeout 5 dist/lan-file-browser --help 2>&1 || true
+          fi
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          VER=$(grep -oP 'v\d+\.\d+' file_browser.py | head -1 || echo "v2.1")
+          echo "version=$VER" >> $GITHUB_OUTPUT
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          ARCHIVE="${{ matrix.archive }}-${{ steps.version.outputs.version }}"
+          mkdir -p "${ARCHIVE}"
+          cp dist/lan-file-browser "${ARCHIVE}/"
+          cp README.md LICENSE CHANGELOG.md stop_server.sh "${ARCHIVE}/"
+          tar -czf "${ARCHIVE}.tar.gz" "${ARCHIVE}/"
+          echo "ASSET=${ARCHIVE}.tar.gz" >> $GITHUB_ENV
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          $archive = "${{ matrix.archive }}-${ver}"
+          New-Item -ItemType Directory -Path $archive -Force
+          Copy-Item "dist/lan-file-browser.exe" "$archive/"
+          Copy-Item README.md, LICENSE, CHANGELOG.md, stop_server.bat "$archive/"
+          Compress-Archive -Path "$archive" -DestinationPath "${archive}.zip"
+          echo "ASSET=${archive}.zip" >> $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ env.ASSET }}
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## 下载 / Download
+
+            | 平台 / Platform | 文件 / File |
+            |---|---|
+            | Windows (x86_64) | `lan-file-browser-windows-x86_64-*.zip` |
+            | macOS (Intel) | `lan-file-browser-macos-x86_64-*.tar.gz` |
+            | macOS (Apple Silicon M1/M2/M3) | `lan-file-browser-macos-aarch64-*.tar.gz` |
+
+            解压后直接运行，无需安装 Python。/ Extract and run directly, no Python required.

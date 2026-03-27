@@ -15,13 +15,18 @@
 
 <!-- 程序界面截图 / Screenshots -->
 <p align="center">
-  <img src="docs/screenshot_login_cn.png" width="270" alt="登录页面">
-  <img src="docs/screenshot_light_cn.png" width="270" alt="亮色主题">
-  <img src="docs/screenshot_dark_cn.png" width="270" alt="暗色主题">
+  <img src="docs/screenshot_login_cn.png" width="260" alt="登录页面">&nbsp;
+  <img src="docs/screenshot_light_cn.png" width="260" alt="亮色主题">&nbsp;
+  <img src="docs/screenshot_dark_cn.png" width="260" alt="暗色主题">
 </p>
 <p align="center">
-  <img src="docs/screenshot_mobile_cn.png" width="270" alt="手机端浏览">
-  <img src="docs/screenshot_preview_cn.png" width="270" alt="文件预览">
+  <img src="docs/screenshot_mobile_cn.png" width="260" alt="手机端浏览">&nbsp;
+  <img src="docs/screenshot_preview_cn.png" width="260" alt="文件预览">&nbsp;
+  <img src="docs/screenshot_office_docx_cn.png" width="260" alt="Office 文档预览">
+</p>
+<p align="center">
+  <img src="docs/screenshot_office_xlsx_cn.png" width="260" alt="Excel 预览">&nbsp;
+  <img src="docs/terminal_cn.png" width="540" alt="终端启动界面">
 </p>
 
 ---
@@ -341,16 +346,8 @@ lan-file-browser/
 
 If this project is helpful to you, feel free to buy the author a coffee ☕
 
-### 国内打赏
+| 微信支付 WeChat Pay | 支付宝 Alipay | Buy Me a Coffee |
+|:---:|:---:|:---:|
+| <img src="docs/wechat_pay.jpg" width="200" alt="微信收款码"> | <img src="docs/alipay.jpg" width="200" alt="支付宝收款码"> | <a href="https://www.buymeacoffee.com/bbyybb"><img src="docs/bmc_qr.png" width="170" alt="Buy Me a Coffee"></a> |
 
-| 微信支付 | 支付宝 |
-|:---:|:---:|
-| <img src="docs/wechat_pay.jpg" width="220" alt="微信收款码"> | <img src="docs/alipay.jpg" width="220" alt="支付宝收款码"> |
-
-### International
-
-<a href="https://www.buymeacoffee.com/bbyybb"><img src="docs/bmc_qr.png" width="180" alt="Buy Me a Coffee"></a>
-
-**☕ Buy Me a Coffee**
-
-- 💖 **GitHub Sponsors**: https://github.com/sponsors/bbyybb/
+[buymeacoffee.com/bbyybb](https://www.buymeacoffee.com/bbyybb) | [GitHub Sponsors](https://github.com/sponsors/bbyybb/)

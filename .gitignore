@@ -2,10 +2,22 @@
 access.log
 bookmarks.json
 
+# 作者个人文档和工具（不公开）
+PUBLISH.md
+PUBLISH_EN.md
+PROMOTION.md
+PROMOTION_EN.md
+seal.py
+build.py
+PROMOTION_CHANNELS.md
+
 # PyInstaller 打包产物
 dist/
 build/
 *.spec
+
+# 构建脚本（仅维护者本地使用，不公开）
+scripts/
 
 # 编辑文件时自动创建的备份
 *.bak
@@ -25,6 +37,8 @@ env/
 # Windows
 Thumbs.db
 
+# Claude Code
+.claude/
+
 # IDE
 .idea
-.idea/*
