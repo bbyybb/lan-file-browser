@@ -50,11 +50,6 @@ jobs:
             os: windows-latest
             archive: lan-file-browser-windows-x86_64
             ext: .zip
-          - name: macOS Intel
-            os: macos-latest
-            archive: lan-file-browser-macos-x86_64
-            ext: .tar.gz
-            python_arch: x64
           - name: macOS Apple Silicon
             os: macos-latest
             archive: lan-file-browser-macos-aarch64
@@ -110,7 +105,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          VER=$(grep -oP 'v\d+\.\d+' file_browser.py | head -1 || echo "v2.1")
+          VER=$(grep -oE 'v[0-9]+\.[0-9]+' file_browser.py | head -1 || echo "v2.1")
           echo "version=$VER" >> $GITHUB_OUTPUT
 
       - name: Package (Unix)
@@ -169,8 +164,9 @@ jobs:
             | 平台 / Platform | 文件 / File |
             |---|---|
             | Windows (x86_64) | `lan-file-browser-windows-x86_64-*.zip` |
-            | macOS (Intel) | `lan-file-browser-macos-x86_64-*.tar.gz` |
-            | macOS (Apple Silicon M1/M2/M3) | `lan-file-browser-macos-aarch64-*.tar.gz` |
+            | macOS (Apple Silicon M1/M2/M3/M4) | `lan-file-browser-macos-aarch64-*.tar.gz` |
             | Linux (x86_64) | `lan-file-browser-linux-x86_64-*.tar.gz` |
+
+            > macOS Intel 用户可通过 Rosetta 2 运行 Apple Silicon 版本，或使用 `python3 file_browser.py` 源码方式运行。
 
             解压后直接运行，无需安装 Python。/ Extract and run directly, no Python required.

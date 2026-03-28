@@ -41,9 +41,10 @@ Supports file preview, editing, upload/download, search, copy/move, ZIP extracti
 
 Download from the [Releases](https://github.com/bbyybb/lan-file-browser/releases) page:
 - **Windows**: Download `FileBrowser.exe`, double-click to run
-- **macOS Intel**: Download `FileBrowser-macOS-Intel`
-- **macOS Apple Silicon**: Download `FileBrowser-macOS-AppleSilicon`
+- **macOS (Apple Silicon M1/M2/M3/M4)**: Download `FileBrowser-macOS-AppleSilicon`
 - **Linux x86_64**: Download `FileBrowser-Linux`
+
+> macOS Intel users can run the Apple Silicon version via Rosetta 2, or use `python3 file_browser.py` to run from source.
 
 macOS / Linux instructions (3 steps):
 1. Open **Terminal** (macOS: Launchpad → Other → Terminal; Linux: Ctrl+Alt+T)
@@ -326,6 +327,10 @@ lan-file-browser/
 ├── LICENSE              # MIT License
 ├── README.md            # Chinese documentation (quick start)
 ├── README_EN.md         # English documentation (this file)
+├── CHANGELOG.md         # Version changelog
+├── CONTRIBUTING.md      # Contributing guide
+├── SECURITY.md          # Security policy
+├── CODE_OF_CONDUCT.md   # Code of conduct
 ├── docs/
 │   ├── GUIDE.md         # Detailed feature guide (Chinese)
 │   ├── GUIDE_EN.md      # Detailed feature guide (English)
@@ -333,6 +338,7 @@ lan-file-browser/
 │   ├── API_EN.md        # API documentation (English)
 │   ├── BEGINNER.md      # Beginner tutorial (Chinese)
 │   └── BEGINNER_EN.md   # Beginner tutorial (English)
+├── .github/             # CI/CD config, Issue/PR templates
 ├── bookmarks.json       # [Generated at runtime] Bookmark data
 └── access.log           # [Generated at runtime] Access log
 ```

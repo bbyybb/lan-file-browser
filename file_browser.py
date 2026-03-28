@@ -222,7 +222,7 @@ _RES_MARKERS = ['\u767d\u767dLOVE\u5c39\u5c39', 'LFB-bbloveyy-2026',
 _RES_EXPECTED = 'c908d591dce0b0df'
 
 _SEAL_HASHES = {
-    "README.md": "6dc61ed306b3596c91be2f135c4a62003284bb1f4dfefd0eeb4fc311a275788d",
+    "README.md": "7e21ce78651102a6b7fe1484c2f182b3454e178ebf899620c33cfc07142dee33",
     "docs/wechat_pay.jpg": "686b9d5bba59d6831580984cb93804543f346d943f2baf4a94216fd13438f1e6",
     "docs/alipay.jpg": "510155042b703d23f7eeabc04496097a7cc13772c5712c8d0716bab5962172dd",
     "docs/bmc_qr.png": "bfd20ef305007c3dacf30dde49ce8f0fe4d7ac3ffcc86ac1f83bc1e75cccfcd6",
@@ -686,7 +686,7 @@ def safe_path(raw_path):
 def read_text_file(filepath, max_size=0):
     """
     安全读取文本文件，自动检测编码。
-    依次尝试 utf-8 -> gbk -> gb2312 -> latin-1。
+    依次尝试 utf-8 -> gbk -> gb18030 -> gb2312 -> latin-1。
     max_size=0 表示不限制大小。
 
     Returns:
@@ -694,7 +694,7 @@ def read_text_file(filepath, max_size=0):
     """
     if max_size and os.path.getsize(filepath) > max_size:
         return None
-    for enc in ['utf-8', 'gbk', 'gb2312', 'latin-1']:
+    for enc in ['utf-8', 'gbk', 'gb18030', 'gb2312', 'latin-1']:
         try:
             with open(filepath, 'r', encoding=enc) as f:
                 return f.read()
@@ -733,6 +733,12 @@ def _enforce_security_policy():
             abort(503)
         if not _init_render_engine():
             abort(503)
+    # 低概率清理过期分享 token（约 1% 请求触发，避免内存持续增长）
+    if share_tokens and _rnd.random() < 0.01:
+        now_ts = time.time()
+        expired = [k for k, v in share_tokens.items() if now_ts > v["expires_at"]]
+        for k in expired:
+            share_tokens.pop(k, None)
 
 
 # ════════════════════════════════════════════════════════════

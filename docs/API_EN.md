@@ -6,6 +6,12 @@
 
 All `/api/*` endpoints (except login and check-auth) require authentication. Unauthenticated requests return `401`.
 
+### Common Response Format
+
+- Success: Returns JSON data with HTTP status `200`
+- Failure: Returns `{"error": "error message"}` with status `400`/`401`/`403`/`404`/`410`/`429`/`500`
+- Error messages are automatically returned in Chinese or English based on client language preference
+
 ---
 
 ## Authentication
@@ -14,6 +20,19 @@ All `/api/*` endpoints (except login and check-auth) require authentication. Una
 |--------|------|-------------|--------------|
 | POST | `/api/login` | Login (rate limited: 10 attempts/min/IP) | `{"password":"xxx"}` |
 | GET | `/api/check-auth` | Check login status | - |
+
+**Response examples:**
+
+```jsonc
+// POST /api/login success
+{"ok": true, "token": "..."}
+
+// POST /api/login failure
+{"error": "Wrong password"}   // 403
+
+// GET /api/check-auth
+{"authenticated": true, "role": "admin"}
+```
 
 ---
 
@@ -25,6 +44,25 @@ All `/api/*` endpoints (except login and check-auth) require authentication. Una
 | GET | `/api/list` | `path`, `sort`(name/size/ctime/mtime), `order`(asc/desc), `filter_type`, `filter_ext` | List directory contents |
 | GET | `/api/info` | `path` | File/directory detailed info |
 | GET | `/api/folder-size` | `path` | Calculate folder size (recursive, 30s timeout) |
+
+**Response examples:**
+
+```jsonc
+// GET /api/drives
+{"drives": ["C:\\", "D:\\"]}
+
+// GET /api/list?path=D:/docs&sort=name&order=asc
+{
+  "path": "D:\\docs",
+  "items": [
+    {"name": "readme.txt", "is_dir": false, "size": "1.2 KB", "size_bytes": 1234,
+     "mtime": "2026-03-01 10:30", "ctime": "2026-02-15 09:00", "type": "text", "ext": ".txt"}
+  ]
+}
+
+// GET /api/folder-size?path=D:/docs
+{"size": "12.5 MB", "size_bytes": 13107200}
+```
 
 ---
 

@@ -6,8 +6,8 @@
 
 | 版本 | 支持状态 |
 |------|---------|
-| v2.1 (最新) | ✅ 支持 |
-| < v2.1 | ❌ 不再支持 |
+| v2.1.1 (最新) | ✅ 支持 |
+| < v2.1.1 | ❌ 不再支持 |
 
 建议始终使用 [最新版本](https://github.com/bbyybb/lan-file-browser/releases/latest)。
 
@@ -46,8 +46,8 @@
 
 | Version | Status |
 |---------|--------|
-| v2.1 (latest) | ✅ Supported |
-| < v2.1 | ❌ No longer supported |
+| v2.1.1 (latest) | ✅ Supported |
+| < v2.1.1 | ❌ No longer supported |
 
 Always use the [latest version](https://github.com/bbyybb/lan-file-browser/releases/latest).
 

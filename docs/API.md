@@ -6,6 +6,12 @@
 
 所有 `/api/*` 接口（除 login、check-auth 外）均需登录后才能访问，未登录返回 `401`。
 
+### 通用响应格式
+
+- 成功：返回 JSON 数据，HTTP 状态码 `200`
+- 失败：返回 `{"error": "错误信息"}`，状态码为 `400`/`401`/`403`/`404`/`410`/`429`/`500`
+- 错误消息根据客户端语言偏好自动返回中文或英文
+
 ---
 
 ## 认证
@@ -14,6 +20,19 @@
 |------|------|------|--------|
 | POST | `/api/login` | 登录（限速 10次/分钟/IP） | `{"password":"xxx"}` |
 | GET | `/api/check-auth` | 检查登录状态 | - |
+
+**响应示例：**
+
+```jsonc
+// POST /api/login 成功
+{"ok": true, "token": "..."}
+
+// POST /api/login 失败
+{"error": "密码错误"}   // 403
+
+// GET /api/check-auth
+{"authenticated": true, "role": "admin"}
+```
 
 ---
 
@@ -25,6 +44,25 @@
 | GET | `/api/list` | `path`, `sort`(name/size/ctime/mtime), `order`(asc/desc), `filter_type`, `filter_ext` | 列出目录内容 |
 | GET | `/api/info` | `path` | 文件/目录详细信息 |
 | GET | `/api/folder-size` | `path` | 计算文件夹大小（递归，30 秒超时） |
+
+**响应示例：**
+
+```jsonc
+// GET /api/drives
+{"drives": ["C:\\", "D:\\"]}
+
+// GET /api/list?path=D:/docs&sort=name&order=asc
+{
+  "path": "D:\\docs",
+  "items": [
+    {"name": "readme.txt", "is_dir": false, "size": "1.2 KB", "size_bytes": 1234,
+     "mtime": "2026-03-01 10:30", "ctime": "2026-02-15 09:00", "type": "text", "ext": ".txt"}
+  ]
+}
+
+// GET /api/folder-size?path=D:/docs
+{"size": "12.5 MB", "size_bytes": 13107200}
+```
 
 ---
 

@@ -41,9 +41,10 @@
 
 从 [Releases](https://github.com/bbyybb/lan-file-browser/releases) 页面下载对应平台的文件：
 - **Windows**：下载 `FileBrowser.exe`，双击运行
-- **macOS Intel**：下载 `FileBrowser-macOS-Intel`
-- **macOS Apple M 系列**：下载 `FileBrowser-macOS-AppleSilicon`
+- **macOS (Apple Silicon M1/M2/M3/M4)**：下载 `FileBrowser-macOS-AppleSilicon`
 - **Linux x86_64**：下载 `FileBrowser-Linux`
+
+> macOS Intel 用户可通过 Rosetta 2 运行 Apple Silicon 版本，或使用 `python3 file_browser.py` 源码方式运行。
 
 macOS / Linux 使用方法（3 步）：
 1. 打开「终端」（macOS: 启动台 → 其他 → 终端；Linux: Ctrl+Alt+T）
@@ -326,6 +327,10 @@ lan-file-browser/
 ├── LICENSE              # MIT 协议
 ├── README.md            # 中文文档（快速上手）
 ├── README_EN.md         # English documentation (Quick Start)
+├── CHANGELOG.md         # 版本变更日志
+├── CONTRIBUTING.md      # 贡献指南
+├── SECURITY.md          # 安全策略
+├── CODE_OF_CONDUCT.md   # 行为准则
 ├── docs/
 │   ├── GUIDE.md         # 详细功能使用指南
 │   ├── GUIDE_EN.md      # Detailed feature guide (English)
@@ -333,6 +338,7 @@ lan-file-browser/
 │   ├── API_EN.md        # API documentation (English)
 │   ├── BEGINNER.md      # 零基础安装教程
 │   └── BEGINNER_EN.md   # Beginner tutorial (English)
+├── .github/             # CI/CD 配置、Issue/PR 模板
 ├── bookmarks.json       # [运行后生成] 收藏夹数据
 └── access.log           # [运行后生成] 访问日志
 ```
