@@ -51,9 +51,10 @@ jobs:
             archive: lan-file-browser-windows-x86_64
             ext: .zip
           - name: macOS Intel
-            os: macos-13
+            os: macos-latest
             archive: lan-file-browser-macos-x86_64
             ext: .tar.gz
+            python_arch: x64
           - name: macOS Apple Silicon
             os: macos-latest
             archive: lan-file-browser-macos-aarch64
@@ -70,6 +71,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          architecture: ${{ matrix.python_arch || '' }}
 
       - name: Install dependencies
         run: pip install pyinstaller flask
