@@ -222,7 +222,7 @@ _RES_MARKERS = ['\u767d\u767dLOVE\u5c39\u5c39', 'LFB-bbloveyy-2026',
 _RES_EXPECTED = 'c908d591dce0b0df'
 
 _SEAL_HASHES = {
-    "README.md": "7e21ce78651102a6b7fe1484c2f182b3454e178ebf899620c33cfc07142dee33",
+    "README.md": "eff7bd7f6e9639e1cd199c90c59efcf396ec5b9afa751fa1e685c23e0a08b1f1",
     "docs/wechat_pay.jpg": "686b9d5bba59d6831580984cb93804543f346d943f2baf4a94216fd13438f1e6",
     "docs/alipay.jpg": "510155042b703d23f7eeabc04496097a7cc13772c5712c8d0716bab5962172dd",
     "docs/bmc_qr.png": "bfd20ef305007c3dacf30dde49ce8f0fe4d7ac3ffcc86ac1f83bc1e75cccfcd6",

@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [v2.1.1] - 2026-03-26
 
 ### Added / 新增
-- GitHub Actions CI: auto-build executables for Windows/macOS(Apple Silicon)/Linux / 自动构建三平台可执行文件
+- GitHub Actions CI: auto-build executables for Windows/macOS(Intel+Apple Silicon)/Linux / 自动构建四平台可执行文件
 - CI attribution integrity check / CI 打赏文件完整性校验
 - Tag-triggered auto-release to GitHub Releases / Tag 触发自动发布到 Releases 页面
 - Linux x86_64 executable build support / 新增 Linux x86_64 可执行文件构建

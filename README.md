@@ -41,10 +41,11 @@
 
 从 [Releases](https://github.com/bbyybb/lan-file-browser/releases) 页面下载对应平台的文件：
 - **Windows**：下载 `FileBrowser.exe`，双击运行
-- **macOS (Apple Silicon M1/M2/M3/M4)**：下载 `FileBrowser-macOS-AppleSilicon`
+- **macOS Intel**：下载 `FileBrowser-macOS-Intel`
+- **macOS Apple Silicon (M1/M2/M3/M4)**：下载 `FileBrowser-macOS-AppleSilicon`
 - **Linux x86_64**：下载 `FileBrowser-Linux`
 
-> macOS Intel 用户可通过 Rosetta 2 运行 Apple Silicon 版本，或使用 `python3 file_browser.py` 源码方式运行。
+> macOS Intel 用户也可直接运行 Apple Silicon 版本（Rosetta 2 会自动兼容）。
 
 macOS / Linux 使用方法（3 步）：
 1. 打开「终端」（macOS: 启动台 → 其他 → 终端；Linux: Ctrl+Alt+T）
