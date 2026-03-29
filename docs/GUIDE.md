@@ -38,7 +38,9 @@
 - [亮色 / 暗色主题](#亮色--暗色主题)
 - [网格 / 列表视图](#网格--列表视图)
 - [中英语言切换](#中英语言切换)
+- [登出](#登出)
 - [阻止系统睡眠](#阻止系统睡眠)
+- [HTTPS 配置](#https-配置)
 - [公网访问（外网穿透）](#公网访问外网穿透)
 - [访问日志](#访问日志)
 - [支持的文件类型](#支持的文件类型)
@@ -106,6 +108,25 @@ python3 file_browser.py --roots /Users/bob/Public /tmp/shared
 ```python
 ALLOWED_ROOTS = ["D:/shared-files", "E:/projects"]
 ```
+
+**方式三：config.json 配置文件**
+
+在程序同目录下创建 `config.json` 文件，可集中管理所有配置项：
+
+```json
+{
+  "port": 8080,
+  "password": "mypass",
+  "roots": ["D:/shared"],
+  "read_only": false,
+  "prevent_sleep": true,
+  "lang": "zh",
+  "ssl_cert": "/path/to/cert.pem",
+  "ssl_key": "/path/to/key.pem"
+}
+```
+
+> 优先级：`config.json` < 命令行参数。即命令行参数会覆盖 `config.json` 中的同名配置。
 
 配置后的效果：
 - 首页只显示白名单中的目录（替代原来的磁盘列表）
@@ -296,11 +317,11 @@ ALLOWED_ROOTS = ["D:/课件"]  # 只暴露课件目录
 
 | 格式 | 预览方式 | 使用技术 |
 |------|---------|---------|
-| `.docx` | 渲染为 HTML 格式化文档 | mammoth.js（CDN） |
-| `.xlsx` `.xls` | 渲染为 HTML 表格，多 Sheet 逐个显示 | SheetJS（CDN） |
+| `.docx` | 渲染为 HTML 格式化文档 | mammoth.js（已内置） |
+| `.xlsx` `.xls` | 渲染为 HTML 表格，多 Sheet 逐个显示 | SheetJS（已内置） |
 | `.pptx` 等 | 暂不支持预览，提供下载按钮 | - |
 
-> Office 预览需要网络访问 `cdn.jsdelivr.net` 加载 JS 库。离线环境下会回退为"不支持预览"。
+> 所有前端库均已内置于程序中，无需联网即可使用 Office 预览功能。
 
 ---
 
@@ -367,6 +388,7 @@ ALLOWED_ROOTS = ["D:/课件"]  # 只暴露课件目录
 **方式二：拖拽上传**
 直接将文件从电脑桌面或文件管理器**拖到浏览器页面**，松开即上传。
 
+- 上传过程中显示**实时进度条**（百分比 + 已上传/总大小），拖拽上传在页面底部显示浮动进度条
 - 无文件大小限制
 - 同名文件自动加数字后缀，不会覆盖
 
@@ -423,9 +445,10 @@ ALLOWED_ROOTS = ["D:/课件"]  # 只暴露课件目录
 ## 临时分享链接
 
 1. 预览任意文件时，点击弹窗顶部的 **"🔗 分享"** 按钮
-2. 自动生成一个临时链接（1 小时有效）
-3. 点击"复制链接"发送给他人
-4. 对方打开链接即可直接下载，**无需登录**
+2. 在下拉菜单中选择链接有效期（5 分钟 / 30 分钟 / 1 小时 / 6 小时 / 12 小时 / 24 小时）
+3. 点击"生成分享链接"
+4. 点击"复制链接"发送给他人
+5. 对方打开链接即可直接下载，**无需登录**
 
 > 链接过期后自动失效，返回 410 Gone。
 
@@ -437,6 +460,8 @@ ALLOWED_ROOTS = ["D:/课件"]  # 只暴露课件目录
 
 适用场景：手机和电脑间传递网址、密码、代码片段等文本。
 
+> 多用户模式下，剪贴板数据按用户隔离，每个用户只能读写自己的剪贴板内容。
+
 ---
 
 ## 常用目录收藏
@@ -446,6 +471,8 @@ ALLOWED_ROOTS = ["D:/课件"]  # 只暴露课件目录
 - **删除**：收藏列表中点击 ✕
 
 收藏数据持久保存在 `bookmarks.json` 中，重启不丢失。
+
+> 多用户模式下，书签按用户独立存储，不同用户的收藏互不影响。
 
 ---
 
@@ -494,6 +521,15 @@ ALLOWED_ROOTS = ["D:/课件"]  # 只暴露课件目录
 
 ---
 
+## 登出
+
+启用密码保护后，页面右上角会显示 **"🚪 登出"** 按钮。点击即可登出当前账户，返回登录页面。
+
+- 登出会清除浏览器中的认证 cookie
+- 多用户模式下，登出同时清除服务端的 session 记录
+
+---
+
 ## 阻止系统睡眠
 
 服务运行期间，程序默认会阻止电脑进入睡眠/休眠状态，确保手机等设备能持续访问。
@@ -514,6 +550,31 @@ ALLOWED_ROOTS = ["D:/课件"]  # 只暴露课件目录
 **关闭此功能：**
 - 命令行：`python file_browser.py --no-sleep`
 - 或修改文件：`PREVENT_SLEEP = False`
+
+---
+
+## HTTPS 配置
+
+通过提供 SSL 证书和私钥文件即可启用 HTTPS 加密访问。
+
+**方式一：命令行参数**
+
+```bash
+python file_browser.py --ssl-cert /path/to/cert.pem --ssl-key /path/to/key.pem
+```
+
+**方式二：config.json 配置文件**
+
+```json
+{
+  "ssl_cert": "/path/to/cert.pem",
+  "ssl_key": "/path/to/key.pem"
+}
+```
+
+启用后，服务将通过 `https://` 提供访问，终端会显示 HTTPS 地址。
+
+> 自签名证书会导致浏览器显示安全警告，可通过 Let's Encrypt 等服务获取免费可信证书。
 
 ---
 
@@ -601,7 +662,7 @@ ssh -R 80:localhost:25600 nokey@localhost.run
 
 ## 访问日志
 
-所有操作自动记录到 `access.log`，同时在终端实时显示：
+所有操作自动记录到 `access.log`，同时在终端实时显示。日志文件自动轮转：单个文件最大 10MB，保留最近 5 份备份（`access.log.1` ~ `access.log.5`）：
 
 ```
 2026-03-05 14:30:00 | 192.168.1.50 | LOGIN | success
@@ -621,21 +682,21 @@ ssh -R 80:localhost:25600 nokey@localhost.run
 
 | 类型 | 扩展名 |
 |------|--------|
-| 图片 | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.svg` `.ico` |
-| 视频 | `.mp4` `.webm` `.mkv` `.avi` `.mov` `.flv` `.wmv` |
-| 音频 | `.mp3` `.wav` `.ogg` `.flac` `.aac` `.wma` `.m4a` |
+| 图片 | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.svg` `.ico` `.tiff` `.tif` |
+| 视频 | `.mp4` `.webm` `.mkv` `.avi` `.mov` `.flv` `.wmv` `.m4v` `.3gp` |
+| 音频 | `.mp3` `.wav` `.ogg` `.flac` `.aac` `.wma` `.m4a` `.opus` |
 | Markdown | `.md` `.markdown` `.mdown` `.mkd` |
 | PDF | `.pdf` |
 | Office | `.docx`（渲染为 HTML）`.xlsx` `.xls`（渲染为表格） |
 | 压缩包 | `.zip`（查看内容列表 + 解压） |
-| 文本/代码 | `.txt` `.py` `.js` `.ts` `.jsx` `.tsx` `.html` `.css` `.json` `.xml` `.yaml` `.yml` `.toml` `.ini` `.cfg` `.conf` `.sh` `.bash` `.bat` `.cmd` `.ps1` `.java` `.c` `.cpp` `.h` `.hpp` `.cs` `.go` `.rs` `.rb` `.php` `.sql` `.r` `.swift` `.kt` `.scala` `.lua` `.pl` `.env` `.gitignore` `.dockerfile` `.vue` `.svelte` `.log` `.csv` `.tsv` |
+| 文本/代码 | `.txt` `.log` `.csv` `.tsv` `.nfo` `.text` `.py` `.pyw` `.pyi` `.js` `.mjs` `.cjs` `.ts` `.mts` `.cts` `.jsx` `.tsx` `.vue` `.svelte` `.astro` `.html` `.htm` `.css` `.scss` `.sass` `.less` `.json` `.jsonc` `.json5` `.xml` `.yaml` `.yml` `.toml` `.ini` `.cfg` `.conf` `.java` `.kt` `.kts` `.scala` `.groovy` `.gradle` `.c` `.h` `.cpp` `.hpp` `.cc` `.cxx` `.cs` `.fs` `.vb` `.go` `.rs` `.swift` `.dart` `.zig` `.nim` `.rb` `.php` `.pl` `.pm` `.lua` `.r` `.jl` `.sql` `.sh` `.bash` `.zsh` `.fish` `.bat` `.cmd` `.ps1` `.psm1` `.hs` `.ml` `.ex` `.exs` `.erl` `.clj` `.cljs` `.lisp` `.el` `.rkt` `.tcl` `.elm` `.purs` `.res` `.scm` `.sml` `.lean` `.raku` `.sol` `.vy` `.f90` `.pas` `.cob` `.ada` `.glsl` `.hlsl` `.wgsl` `.cu` `.ahk` `.nix` `.awk` `.coffee` `.mdx` `.erb` `.j2` `.jsp` `.mustache` `.tf` `.tfvars` `.hcl` `.graphql` `.proto` `.prisma` `.rst` `.adoc` `.tex` `.org` `.rmd` `.typ` `.srt` `.vtt` `.ass` `.lrc` `.m3u` `.m3u8` `.cue` `.ics` `.vcf` `.pem` `.crt` `.key` `.diff` `.patch` `.asm` `.dockerfile` `.spec` `.csproj` `.sln` 等 160+ 种 |
 
 ### 仅下载
 
 | 类型 | 扩展名 |
 |------|--------|
-| 压缩包 | `.rar` `.7z` `.tar` `.gz` `.bz2` `.xz` |
-| Office | `.doc` `.docx` `.xls` `.xlsx` `.ppt` `.pptx` `.odt` `.ods` `.odp` |
+| 压缩包 | `.rar` `.7z` `.tar` `.gz` `.bz2` `.xz` `.zst` `.tgz` |
+| Office | `.doc` `.ppt` `.pptx` `.odt` `.ods` `.odp` `.rtf` |
 | 字体 | `.ttf` `.otf` `.woff` `.woff2` |
 
 ---
@@ -650,10 +711,13 @@ ssh -R 80:localhost:25600 nokey@localhost.run
 │  │  ├── marked.js       Markdown 渲染         │  │
 │  │  ├── highlight.js    代码语法高亮           │  │
 │  │  ├── mermaid.js      图表渲染              │  │
-│  │  └── qrcode.js       二维码生成            │  │
+│  │  ├── DOMPurify       XSS 净化              │  │
+│  │  ├── qrcode.js       二维码生成            │  │
+│  │  ├── mammoth.js      Word 文档预览         │  │
+│  │  └── SheetJS          Excel 表格预览        │  │
 │  └─────────────────────┬──────────────────────┘  │
 └────────────────────────┼─────────────────────────┘
-                         │ HTTP + Cookie 认证
+                         │ HTTP/HTTPS + Cookie 认证
 ┌────────────────────────┼─────────────────────────┐
 │       Python Flask 服务 (0.0.0.0:25600)          │
 │  ┌─────────────────────┴──────────────────────┐  │

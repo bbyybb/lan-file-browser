@@ -181,7 +181,7 @@ python file_browser.py
 
 ```
 ======================================================
-  [File Browser v2.1] started
+  [File Browser v2.1.2] started
 ======================================================
   Local:    http://localhost:25600
   Phone:    http://192.168.1.100:25600    ← 手机要打开的地址

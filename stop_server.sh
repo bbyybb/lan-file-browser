@@ -18,7 +18,7 @@ PID=""
 if command -v lsof >/dev/null 2>&1; then
     PID=$(lsof -ti :$PORT 2>/dev/null)
 elif command -v ss >/dev/null 2>&1; then
-    PID=$(ss -tlnp "sport = :$PORT" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u)
+    PID=$(ss -tlnp "sport = :$PORT" 2>/dev/null | awk -F'pid=' '{print $2}' | awk -F',' '{print $1}' | grep -o '[0-9]*' | sort -u)
 elif command -v fuser >/dev/null 2>&1; then
     PID=$(fuser $PORT/tcp 2>/dev/null)
 else
@@ -47,8 +47,8 @@ echo ""
 echo "[3/3] Stopping process..."
 kill $PID 2>/dev/null
 
-# Wait 2 seconds, then force kill if still running
-sleep 2
+# Wait 3 seconds, then force kill if still running
+sleep 3
 for p in $PID; do
     if kill -0 "$p" 2>/dev/null; then
         echo "Process $p still running, force killing..."
@@ -57,4 +57,18 @@ for p in $PID; do
 done
 
 echo ""
-echo "[OK] Server stopped successfully! (PID: $PID)"
+# Verify that all processes are actually terminated
+STILL_RUNNING=""
+for p in $PID; do
+    if kill -0 "$p" 2>/dev/null; then
+        STILL_RUNNING="$STILL_RUNNING $p"
+    fi
+done
+
+if [ -z "$STILL_RUNNING" ]; then
+    echo "[OK] Server stopped successfully! (PID: $PID)"
+else
+    echo "[WARN] Failed to stop process(es):$STILL_RUNNING"
+    echo "You may need to stop them manually with: sudo kill -9$STILL_RUNNING"
+    exit 1
+fi

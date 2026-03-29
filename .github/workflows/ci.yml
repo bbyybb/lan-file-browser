@@ -38,9 +38,26 @@ jobs:
           fi
           echo "All checks passed."
 
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run tests
+        run: pytest tests/ -v
+
   build:
     name: Build (${{ matrix.name }})
-    needs: attribution-check
+    needs: [attribution-check, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -89,6 +106,10 @@ jobs:
           ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data README.md${SEP}."
           ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data stop_server.bat${SEP}."
           ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data stop_server.sh${SEP}."
+          # Bundle static vendor files (offline CDN)
+          if [ -d "static" ]; then
+            ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data static${SEP}static"
+          fi
 
           pyinstaller --onefile --clean --noconfirm \
             --name lan-file-browser \
@@ -110,7 +131,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          VER=$(grep -oE 'v[0-9]+\.[0-9]+' file_browser.py | head -1 || echo "v2.1")
+          VER=$(python -c "import re; m=re.search(r'__version__\s*=\s*[\"'\'']([^\"'\'']+)', open('file_browser.py').read()); print('v'+m.group(1))" 2>/dev/null || echo "v2.1.2")
           echo "version=$VER" >> $GITHUB_OUTPUT
 
       - name: Package (Unix)

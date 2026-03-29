@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-局域网文件浏览器 (LAN File Browser) v2.1
+局域网文件浏览器 (LAN File Browser) v2.1.2
 ==========================================
 一个运行在电脑端的 Web 文件浏览器，可通过手机（同局域网内）
 使用浏览器访问 http://<电脑IP>:25600 来浏览、搜索、预览和下载电脑中的文件。
 
-功能特性 v2.1:
+功能特性 v2.1.2:
   - 密码保护（启动时自动生成访问密码）
   - 访问日志（记录所有操作到日志文件）
   - 文件上传（手机上传文件到电脑）
@@ -29,11 +29,15 @@
   python file_browser.py
 """
 
+__version__ = "2.1.2"
+
 import os
 import sys
 import io
 import re
 import hmac
+import hashlib as _hl
+import threading
 import time
 import shutil
 import socket
@@ -43,9 +47,12 @@ import string
 import json
 import zipfile
 import logging
+import tempfile
+import random as _rnd
 from pathlib import Path
 from datetime import datetime
 from functools import wraps
+from logging.handlers import RotatingFileHandler
 
 from flask import (
     Flask, render_template_string, request, send_file,
@@ -55,7 +62,14 @@ from flask import (
 # ════════════════════════════════════════════════════════════
 # Flask 应用实例
 # ════════════════════════════════════════════════════════════
-app = Flask(__name__)
+# PyInstaller frozen 模式下，静态文件在 sys._MEIPASS 中；开发模式下在脚本同目录
+if getattr(sys, 'frozen', False):
+    _static_folder = os.path.join(sys._MEIPASS, 'static')
+else:
+    _static_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+app = Flask(__name__, static_folder=_static_folder)
+app.secret_key = secrets.token_hex(32)
+app.config['MAX_CONTENT_LENGTH'] = None  # 不限制上传文件大小
 
 # 关闭 Flask/Werkzeug 默认的启动横幅和开发服务器警告
 import flask.cli
@@ -118,6 +132,30 @@ CONTENT_SEARCH_MAX_SIZE = 512 * 1024  # 内容搜索单文件大小上限 (512KB
 CONTENT_SEARCH_MAX_FILES = 500        # 内容搜索最大扫描文件数
 CONTENT_SEARCH_MAX_RESULTS = 50       # 内容搜索最大结果数
 
+# 系统关键目录黑名单（禁止删除），所有路径必须小写
+_PROTECTED_PATHS = {
+    # Windows 系统目录
+    "c:\\windows", "c:\\program files", "c:\\program files (x86)",
+    "c:\\users", "c:\\system32", "c:\\programdata",
+    "c:\\windows\\system32", "c:\\windows\\syswow64",
+    # macOS 特有
+    "/users", "/applications", "/volumes",
+    # Linux 补充
+    "/snap", "/srv", "/media", "/mnt",
+    # macOS / Linux 通用系统目录
+    "/", "/bin", "/sbin", "/usr", "/etc", "/var", "/tmp",
+    "/system", "/library", "/private",
+    "/boot", "/dev", "/proc", "/sys", "/run",
+    "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/local",
+    "/home", "/root", "/opt",
+}
+# Windows A:\ ~ Z:\ 全盘符根目录
+_PROTECTED_PATHS |= {f"{chr(c)}:\\" for c in range(ord('a'), ord('z') + 1)}
+
+# 操作系统隐藏文件（在文件列表中过滤）
+_SYSTEM_HIDDEN_FILES = {'.DS_Store', 'Thumbs.db', 'desktop.ini',
+                        '.Spotlight-V100', '.Trashes', '.fseventsd'}
+
 # ════════════════════════════════════════════════════════════
 # 全局状态
 # ════════════════════════════════════════════════════════════
@@ -127,8 +165,9 @@ AUTH_TOKEN = secrets.token_hex(16)
 # 多用户 session: {token: {"user": username, "role": "admin"|"readonly"}}
 user_sessions = {}
 
-# 共享剪贴板（内存存储）
-clipboard_data = {"text": "", "updated": ""}
+# 共享剪贴板（内存存储，多用户模式按用户隔离）
+# 结构: {user_key: {"text": "", "updated": ""}}
+clipboard_data = {}
 
 # 访问密码（启动时确定）
 access_password = ""
@@ -136,8 +175,14 @@ access_password = ""
 # 登录速率限制: {ip: [timestamp1, timestamp2, ...]}
 login_attempts = {}
 
+# HTTPS 模式标志（在 main 块中根据 SSL 配置设置）
+_use_https = False
+
 # 临时分享链接: {token: {"path": str, "expires_at": float}}
 share_tokens = {}
+
+# 线程安全锁（保护上述全局字典的并发访问）
+_state_lock = threading.Lock()
 
 # ════════════════════════════════════════════════════════════
 # API 错误消息国际化
@@ -199,6 +244,7 @@ _API_MESSAGES = {
     "calc_timeout":         {"zh": "计算超时", "en": "Calculation timed out"},
     "regex_error":          {"zh": "正则表达式错误", "en": "Regular expression error"},
     "zip_illegal_path":     {"zh": "ZIP 包含非法路径", "en": "ZIP contains illegal path"},
+    "internal_error":       {"zh": "内部服务器错误", "en": "Internal server error"},
 }
 
 def _api_t(key):
@@ -216,13 +262,12 @@ def _api_t(key):
         lang = "zh"
     return msgs.get(lang, msgs.get("zh", key))
 
-import hashlib as _hl
 _RES_MARKERS = ['\u767d\u767dLOVE\u5c39\u5c39', 'LFB-bbloveyy-2026',
                 'bbyybb', 'buymeacoffee.com/bbyybb', 'sponsors/bbyybb']
 _RES_EXPECTED = 'c908d591dce0b0df'
 
 _SEAL_HASHES = {
-    "README.md": "eff7bd7f6e9639e1cd199c90c59efcf396ec5b9afa751fa1e685c23e0a08b1f1",
+    "README.md": "7039efe8b8b23023c5b979296fd6d3f3c7b5c2214f3000b6430ca3d7437a5c5f",
     "docs/wechat_pay.jpg": "686b9d5bba59d6831580984cb93804543f346d943f2baf4a94216fd13438f1e6",
     "docs/alipay.jpg": "510155042b703d23f7eeabc04496097a7cc13772c5712c8d0716bab5962172dd",
     "docs/bmc_qr.png": "bfd20ef305007c3dacf30dde49ce8f0fe4d7ac3ffcc86ac1f83bc1e75cccfcd6",
@@ -334,7 +379,9 @@ def setup_access_log():
     logger.setLevel(logging.INFO)
     # 避免重复添加 handler
     if not logger.handlers:
-        handler = logging.FileHandler(ACCESS_LOG_FILE, encoding="utf-8")
+        handler = RotatingFileHandler(
+            ACCESS_LOG_FILE, maxBytes=10*1024*1024, backupCount=5, encoding="utf-8"
+        )
         handler.setFormatter(logging.Formatter(
             "%(asctime)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
         ))
@@ -377,12 +424,32 @@ def _get_current_role():
     if not token:
         return None
     # 多用户模式
-    if USERS and token in user_sessions:
-        return user_sessions[token]["role"]
+    with _state_lock:
+        if USERS and token in user_sessions:
+            return user_sessions[token]["role"]
     # 单密码模式
     if not USERS and hmac.compare_digest(token, AUTH_TOKEN):
         return "admin"
     return None
+
+def _get_current_username():
+    """获取当前请求的用户名。多用户模式返回用户名，单密码/无密码返回 None。"""
+    token = request.cookies.get("auth_token", "")
+    if not token:
+        return None
+    with _state_lock:
+        if USERS and token in user_sessions:
+            return user_sessions[token]["user"]
+    return None
+
+
+def _clipboard_key():
+    """获取当前用户的剪贴板隔离键。"""
+    if USERS:
+        u = _get_current_username()
+        return u if u else "_default"
+    return "_default"
+
 
 def require_auth(f):
     """
@@ -502,15 +569,35 @@ def get_drives():
 
 
 def get_local_ip():
-    """获取本机局域网 IP 地址。"""
+    """
+    获取本机局域网 IP 地址。
+    优先通过 UDP 探测（无需外网），失败时遍历所有网卡接口。
+    纯局域网（无默认网关）环境也能正确返回局域网 IP。
+    """
+    # 方法 1: UDP connect 探测（经典方法）
+    # 优先尝试局域网广播地址，不依赖外网可达性
+    for probe_addr in ("10.255.255.255", "8.8.8.8"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.1)
+            s.connect((probe_addr, 80))
+            ip = s.getsockname()[0]
+            s.close()
+            if ip and ip != "0.0.0.0" and not ip.startswith("127."):
+                return ip
+        except Exception:
+            pass
+
+    # 方法 2: 遍历所有网卡接口（兜底方案）
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip and not ip.startswith("127."):
+                return ip
     except Exception:
-        return "127.0.0.1"
+        pass
+
+    return "127.0.0.1"
 
 
 def format_size(size_bytes):
@@ -530,10 +617,7 @@ def format_time(timestamp):
     return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
 
 
-def get_file_type(filename):
-    """根据文件扩展名判断文件类别。"""
-    ext = Path(filename).suffix.lower()
-    type_map = {
+_FILE_TYPE_MAP = {
         'image': {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif'},
         'video': {'.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv', '.wmv', '.m4v', '.3gp'},
         'audio': {'.mp3', '.wav', '.ogg', '.flac', '.aac', '.wma', '.m4a', '.opus'},
@@ -546,10 +630,21 @@ def get_file_type(filename):
             '.scss', '.sass', '.less', '.styl', '.astro',
             '.ejs', '.hbs', '.pug', '.njk', '.liquid', '.twig',
             '.wxml', '.wxss',
+            '.mjs', '.cjs', '.mts', '.cts',     # Node.js 模块格式
+            '.coffee', '.litcoffee',             # CoffeeScript
+            '.mdx', '.svx',                      # MDX / Svelte Markdown
+            # 模板引擎
+            '.erb', '.haml', '.slim',            # Ruby 模板
+            '.j2', '.jinja', '.jinja2',          # Jinja 模板
+            '.tmpl', '.tpl', '.mustache',        # 通用模板
+            # 服务端页面
+            '.jsp', '.asp', '.aspx', '.phtml',
             # 数据格式
             '.json', '.jsonc', '.json5', '.ndjson', '.jsonl', '.geojson',
             '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
             '.proto', '.avsc',
+            '.jsonnet', '.libsonnet',            # Jsonnet 配置语言
+            '.dhall',                            # Dhall 配置语言
             # 主流编程语言
             '.py', '.pyw', '.pyi',
             '.java', '.kt', '.kts', '.scala', '.groovy', '.gradle',
@@ -562,9 +657,37 @@ def get_file_type(filename):
             '.hs', '.lhs', '.ml', '.mli', '.ex', '.exs', '.erl', '.hrl',
             '.clj', '.cljs', '.lisp', '.el', '.rkt', '.tcl',
             '.cr', '.hx',
+            '.elm', '.purs',                     # Elm / PureScript
+            '.res', '.resi', '.re', '.rei',      # ReScript / ReasonML
+            '.scm', '.ss',                       # Scheme
+            '.sml', '.sig',                      # Standard ML
+            '.idr', '.agda', '.lean',            # 依赖类型语言
+            # Raku / Perl6
+            '.raku', '.rakumod',
+            # Fortran
+            '.f', '.f90', '.f95', '.f03', '.f08', '.for', '.fpp',
+            # Pascal / Delphi
+            '.pas', '.pp', '.lpr', '.dpr',
+            # COBOL
+            '.cob', '.cbl',
+            # Ada
+            '.ada', '.adb', '.ads',
+            # 区块链 / 智能合约
+            '.sol', '.vy',
+            # GPU / 着色器语言
+            '.glsl', '.hlsl', '.wgsl', '.metal', '.vert', '.frag', '.comp',
+            '.cu', '.cuh',                       # CUDA
             # Shell / 终端
             '.sh', '.bash', '.zsh', '.fish', '.csh', '.ksh',
             '.bat', '.cmd', '.ps1', '.psm1',
+            # AutoHotkey / AutoIt
+            '.ahk', '.au3',
+            # Awk / Sed
+            '.awk', '.sed',
+            # AppleScript
+            '.applescript',
+            # Nix
+            '.nix',
             # 系统配置 — Windows
             '.reg', '.inf', '.vbs', '.vba', '.wsf',
             # 系统配置 — macOS / iOS
@@ -572,15 +695,26 @@ def get_file_type(filename):
             # 系统配置 — Linux
             '.desktop', '.service', '.timer', '.socket', '.mount',
             # DevOps / CI / 构建
-            '.tf', '.hcl', '.properties', '.sbt', '.cmake',
+            '.tf', '.tfvars', '.hcl', '.properties', '.sbt', '.cmake',
             '.mk', '.mak', '.cabal', '.gemspec', '.podspec',
+            # .NET / Visual Studio 项目文件（XML 文本）
+            '.csproj', '.vbproj', '.fsproj', '.sln', '.vcxproj',
+            # Spec 文件
+            '.spec',
             # Web 服务器 / API
             '.htaccess', '.nginx', '.graphql', '.gql',
             # 文档 / 标记
             '.rst', '.asciidoc', '.adoc', '.tex', '.latex', '.bib', '.sty', '.cls',
             '.dtd', '.xsd', '.xsl', '.xslt',
+            '.org',                              # Emacs Org Mode
+            '.rmd', '.rnw',                      # R Markdown / Sweave
+            '.typ',                              # Typst
             # 字幕
             '.srt', '.vtt', '.ass', '.ssa', '.sub', '.lrc',
+            # 多媒体播放列表 / 元数据（纯文本）
+            '.m3u', '.m3u8', '.cue',
+            # 日历 / 通讯录（纯文本）
+            '.ics', '.vcf',
             # 证书 / 密钥（Base64 文本）
             '.pem', '.crt', '.csr', '.key', '.pub', '.cer',
             # Diff / Patch
@@ -595,28 +729,43 @@ def get_file_type(filename):
         'office': {'.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp', '.rtf'},
         'font': {'.ttf', '.otf', '.woff', '.woff2'},
     }
-    for ftype, exts in type_map.items():
-        if ext in exts:
-            return ftype
-    # 无扩展名的常见文本文件（按文件名匹配）
-    name = Path(filename).name
-    text_filenames = {
+
+_TEXT_FILENAMES = {
         # 构建 / 项目文件
-        'makefile', 'dockerfile', 'vagrantfile', 'gemfile', 'rakefile',
-        'procfile', 'brewfile', 'justfile', 'cmakelists.txt',
+        'makefile', 'dockerfile', 'containerfile', 'vagrantfile',
+        'gemfile', 'rakefile', 'procfile', 'brewfile', 'justfile',
+        'cmakelists.txt', 'jenkinsfile', 'snakefile',
+        'sconscript', 'sconstruct', 'podfile', 'cartfile',
+        'fastfile', 'appfile', 'dangerfile', 'guardfile',
+        'berksfile', 'capfile', 'thorfile', 'earthfile', 'tiltfile',
+        # Bazel / Buck
+        'build', 'build.bazel', 'workspace', 'workspace.bazel', 'buck',
+        # Go
+        'go.mod', 'go.sum',
+        # Python
+        'pipfile',
         # 项目说明文件
         'license', 'licence', 'authors', 'contributors', 'changelog',
         'readme', 'todo', 'copying', 'install', 'news', 'thanks',
         # Git
         '.gitignore', '.gitattributes', '.gitmodules', '.gitconfig',
+        '.gitkeep', '.mailmap',
         # Docker / CI
         '.dockerignore', '.dockerfile',
+        # 各种 ignore 文件
+        '.prettierignore', '.eslintignore', '.helmignore', '.slugignore',
         # 编辑器 / IDE 配置
         '.editorconfig', '.prettierrc', '.eslintrc', '.stylelintrc',
         '.babelrc', '.npmrc', '.yarnrc', '.nvmrc', '.pylintrc', '.flake8',
         '.vimrc', '.viminfo', '.gvimrc', '.nanorc', '.emacs',
+        '.clang-format', '.clang-tidy',
+        '.yamllint', '.markdownlint', '.rubocop',
+        # 版本管理器
+        '.ruby-version', '.python-version', '.node-version', '.java-version',
+        '.tool-versions',
         # 环境变量
         '.env', '.env.local', '.env.development', '.env.production',
+        '.env.test', '.env.staging', '.env.example',
         # Shell 配置
         '.profile', '.login', '.logout',
         '.bashrc', '.bash_profile', '.bash_login', '.bash_logout', '.bash_aliases',
@@ -628,7 +777,15 @@ def get_file_type(filename):
         '.wgetrc', '.curlrc', '.screenrc', '.netrc', '.htpasswd',
         '.condarc', '.gemrc',
     }
-    if name.lower() in text_filenames:
+
+
+def get_file_type(filename):
+    """根据文件扩展名判断文件类别。"""
+    ext = Path(filename).suffix.lower()
+    for ftype, exts in _FILE_TYPE_MAP.items():
+        if ext in exts:
+            return ftype
+    if Path(filename).name.lower() in _TEXT_FILENAMES:
         return 'text'
     return 'other'
 
@@ -683,10 +840,27 @@ def safe_path(raw_path):
     return p
 
 
+def detect_encoding(filepath):
+    """
+    检测文件编码。依次尝试 utf-8 -> gbk -> gb18030 -> latin-1。
+
+    Returns:
+        str | None: 检测到的编码名称，全部失败返回 None
+    """
+    for enc in ['utf-8', 'gbk', 'gb18030', 'latin-1']:
+        try:
+            with open(filepath, 'r', encoding=enc) as f:
+                f.read()
+            return enc
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    return None
+
+
 def read_text_file(filepath, max_size=0):
     """
     安全读取文本文件，自动检测编码。
-    依次尝试 utf-8 -> gbk -> gb18030 -> gb2312 -> latin-1。
+    依次尝试 utf-8 -> gbk -> gb18030 -> latin-1。
     max_size=0 表示不限制大小。
 
     Returns:
@@ -694,7 +868,7 @@ def read_text_file(filepath, max_size=0):
     """
     if max_size and os.path.getsize(filepath) > max_size:
         return None
-    for enc in ['utf-8', 'gbk', 'gb18030', 'gb2312', 'latin-1']:
+    for enc in ['utf-8', 'gbk', 'gb18030', 'latin-1']:
         try:
             with open(filepath, 'r', encoding=enc) as f:
                 return f.read()
@@ -703,31 +877,90 @@ def read_text_file(filepath, max_size=0):
     return None
 
 
-def load_bookmarks():
+def _bookmarks_file(username=None):
+    """获取书签文件路径（多用户模式按用户隔离）。"""
+    if username:
+        safe_name = re.sub(r'[^\w\-]', '_', username)
+        return os.path.join(DATA_DIR, f"bookmarks_{safe_name}.json")
+    return BOOKMARKS_FILE
+
+
+def load_bookmarks(username=None):
     """从 JSON 文件加载书签列表。"""
-    if os.path.exists(BOOKMARKS_FILE):
+    filepath = _bookmarks_file(username)
+    if os.path.exists(filepath):
         try:
-            with open(BOOKMARKS_FILE, 'r', encoding='utf-8') as f:
+            with open(filepath, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
             return []
     return []
 
 
-def save_bookmarks(bookmarks):
+def save_bookmarks(bookmarks, username=None):
     """将书签列表保存到 JSON 文件。"""
-    with open(BOOKMARKS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(bookmarks, f, ensure_ascii=False, indent=2)
+    filepath = _bookmarks_file(username)
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(bookmarks, f, ensure_ascii=False, indent=2)
+    except (IOError, OSError) as e:
+        app.logger.error("Failed to save bookmarks to %s: %s", filepath, e)
+
+
+def _is_dangerous_regex(pattern_str):
+    """
+    检测可能导致灾难性回溯 (ReDoS) 的正则表达式模式。
+    检测嵌套量词（如 (a+)+, (?:a+)+, (a{2,})*, ([a-z]+)+ 等）。
+    """
+    # 匹配各种形式的分组（普通分组、非捕获分组等），内含量词，外接量词
+    # (?:...) | (?=...) | (?!...) | (?<=...) | (?<!...) | (...)
+    dangerous_patterns = [
+        r'\([^)]*[+*][^)]*\)[+*?]',           # (a+)+, (a*)*
+        r'\(\?[^)]*[+*][^)]*\)[+*?]',         # (?:a+)+, (?:a*)*
+        r'\([^)]*\{[0-9]*,[0-9]*\}[^)]*\)[+*?]',  # (a{2,})+
+        r'\[[^\]]+\][+*]\)+[+*?]',            # ([a-z]+)+
+    ]
+    for dp in dangerous_patterns:
+        if re.search(dp, pattern_str):
+            return True
+    return False
 
 
 # ════════════════════════════════════════════════════════════
 # 请求预处理
 # ════════════════════════════════════════════════════════════
 
-import random as _rnd
+
+@app.after_request
+def _add_security_headers(response):
+    """添加安全响应头。"""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' blob:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "media-src 'self' blob:; "
+        "frame-src 'self' blob:; "
+        "object-src 'none'; "
+        "base-uri 'self'"
+    )
+    return response
+
 
 @app.before_request
 def _enforce_security_policy():
+    # CSRF 保护: 所有 POST 请求（除 /api/login 和文件上传外）必须携带自定义 Header
+    # 浏览器同源策略阻止跨站请求设置自定义 Header，因此这能有效防御 CSRF
+    if request.method == "POST" and request.path not in ("/api/login",):
+        # 文件上传使用 multipart/form-data，前端通过 FormData 发送，
+        # 为兼容性仍要求 X-Requested-With 头
+        if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+            return jsonify({"error": _api_t("invalid_request")}), 403
     if _rnd.random() < 0.03:
         if not _resolve_template_vars():
             abort(503)
@@ -736,9 +969,10 @@ def _enforce_security_policy():
     # 低概率清理过期分享 token（约 1% 请求触发，避免内存持续增长）
     if share_tokens and _rnd.random() < 0.01:
         now_ts = time.time()
-        expired = [k for k, v in share_tokens.items() if now_ts > v["expires_at"]]
-        for k in expired:
-            share_tokens.pop(k, None)
+        with _state_lock:
+            expired = [k for k, v in share_tokens.items() if now_ts > v["expires_at"]]
+            for k in expired:
+                share_tokens.pop(k, None)
 
 
 # ════════════════════════════════════════════════════════════
@@ -766,18 +1000,19 @@ def api_login():
     # ── 速率限制 ──
     ip = request.remote_addr or "unknown"
     now = datetime.now().timestamp()
-    # 定期清理过期的 login_attempts 条目（每 100 次登录请求清理一次，防止内存泄漏）
-    if len(login_attempts) > 100:
-        expired_ips = [k for k, v in login_attempts.items() if all(now - ts > LOGIN_RATE_WINDOW for ts in v)]
-        for k in expired_ips:
-            del login_attempts[k]
-    timestamps = login_attempts.get(ip, [])
-    timestamps = [t for t in timestamps if now - t < LOGIN_RATE_WINDOW]
-    if len(timestamps) >= LOGIN_RATE_MAX:
-        log_access("LOGIN", f"rate_limited ip={ip}")
-        return jsonify({"ok": False, "error": _api_t("rate_limited")}), 429
-    timestamps.append(now)
-    login_attempts[ip] = timestamps
+    with _state_lock:
+        # 定期清理过期的 login_attempts 条目（每 100 次登录请求清理一次，防止内存泄漏）
+        if len(login_attempts) > 100:
+            expired_ips = [k for k, v in login_attempts.items() if all(now - ts > LOGIN_RATE_WINDOW for ts in v)]
+            for k in expired_ips:
+                del login_attempts[k]
+        timestamps = login_attempts.get(ip, [])
+        timestamps = [t for t in timestamps if now - t < LOGIN_RATE_WINDOW]
+        if len(timestamps) >= LOGIN_RATE_MAX:
+            log_access("LOGIN", f"rate_limited ip={ip}")
+            return jsonify({"ok": False, "error": _api_t("rate_limited")}), 429
+        timestamps.append(now)
+        login_attempts[ip] = timestamps
 
     if request.content_length and request.content_length > 1024:
         return jsonify({"ok": False, "error": _api_t("invalid_request")}), 400
@@ -791,16 +1026,17 @@ def api_login():
             if hmac.compare_digest(pwd, info.get("password", "")):
                 role = info.get("role", "readonly")
                 token = secrets.token_hex(16)
-                # 限制 session 数量，防止内存泄漏（保留最近 1000 个）
-                if len(user_sessions) > 1000:
-                    oldest = list(user_sessions.keys())[:len(user_sessions) - 500]
-                    for k in oldest:
-                        del user_sessions[k]
-                user_sessions[token] = {"user": username, "role": role}
+                with _state_lock:
+                    # 限制 session 数量，防止内存泄漏（保留最近 1000 个）
+                    if len(user_sessions) > 1000:
+                        oldest = list(user_sessions.keys())[:len(user_sessions) - 500]
+                        for k in oldest:
+                            del user_sessions[k]
+                    user_sessions[token] = {"user": username, "role": role}
+                    login_attempts.pop(ip, None)
                 log_access("LOGIN", f"success user={username} role={role}")
-                login_attempts.pop(ip, None)
                 resp = make_response(jsonify({"ok": True, "user": username, "role": role}))
-                resp.set_cookie("auth_token", token, httponly=True, samesite="Lax")
+                resp.set_cookie("auth_token", token, httponly=True, samesite="Lax", secure=_use_https)
                 return resp
         log_access("LOGIN", f"failed ip={ip}")
         return jsonify({"ok": False, "error": _api_t("wrong_password")}), 401
@@ -808,9 +1044,10 @@ def api_login():
     # ── 单密码模式 ──
     if hmac.compare_digest(pwd, access_password):
         log_access("LOGIN", "success")
-        login_attempts.pop(ip, None)
+        with _state_lock:
+            login_attempts.pop(ip, None)
         resp = make_response(jsonify({"ok": True}))
-        resp.set_cookie("auth_token", AUTH_TOKEN, httponly=True, samesite="Lax")
+        resp.set_cookie("auth_token", AUTH_TOKEN, httponly=True, samesite="Lax", secure=_use_https)
         return resp
     else:
         log_access("LOGIN", f"failed ip={ip}")
@@ -829,6 +1066,23 @@ def api_check_auth():
     effective_readonly = READ_ONLY or (role == "readonly")
     return jsonify({"need_auth": True, "logged_in": logged_in,
                     "read_only": effective_readonly, "role": role or ""})
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    """
+    登出接口。清除当前用户的 session 并移除 cookie。
+
+    多用户模式下会从 user_sessions 中删除对应 token。
+    """
+    token = request.cookies.get("auth_token", "")
+    if token and USERS:
+        with _state_lock:
+            user_sessions.pop(token, None)
+    log_access("LOGOUT", "")
+    resp = make_response(jsonify({"ok": True}))
+    resp.set_cookie("auth_token", "", expires=0, httponly=True, samesite="Lax")
+    return resp
 
 
 # ════════════════════════════════════════════════════════════
@@ -892,9 +1146,12 @@ def api_list():
     except PermissionError:
         return jsonify({"error": _api_t("no_permission_dir")}), 403
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Unhandled error: %s", e)
+        return jsonify({"error": _api_t("internal_error")}), 500
 
     for entry in entries:
+        if entry.name in _SYSTEM_HIDDEN_FILES:
+            continue
         try:
             stat = entry.stat(follow_symlinks=False)
             is_dir = entry.is_dir(follow_symlinks=False)
@@ -925,16 +1182,18 @@ def api_list():
         except (PermissionError, OSError):
             continue
 
-    # 排序: 文件夹始终在前
+    # 排序: 文件夹始终在前（不受排序方向影响），文件夹/文件各自按字段排序
     reverse = sort_order == "desc"
     if sort_by == "size":
-        items.sort(key=lambda x: (not x["is_dir"], x["size"]), reverse=reverse)
+        items.sort(key=lambda x: x["size"], reverse=reverse)
     elif sort_by == "mtime":
-        items.sort(key=lambda x: (not x["is_dir"], x["mtime"]), reverse=reverse)
+        items.sort(key=lambda x: x["mtime"], reverse=reverse)
     elif sort_by == "ctime":
-        items.sort(key=lambda x: (not x["is_dir"], x["ctime"]), reverse=reverse)
+        items.sort(key=lambda x: x["ctime"], reverse=reverse)
     else:
-        items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()), reverse=reverse)
+        items.sort(key=lambda x: x["name"].lower(), reverse=reverse)
+    # 稳定排序：文件夹始终在前（利用 Python sort 的稳定性，不受 reverse 影响）
+    items.sort(key=lambda x: not x["is_dir"])
 
     parent = os.path.dirname(real).replace("\\", "/")
     if parent == real.replace("\\", "/"):
@@ -963,8 +1222,8 @@ def api_search():
     if use_regex:
         if len(keyword) > 200:
             return jsonify({"error": _api_t("regex_too_long")}), 400
-        # 检测可能导致灾难性回溯的嵌套量词模式（如 (a+)+, (a*)*）
-        if re.search(r'\([^)]*[+*][^)]*\)[+*]', keyword):
+        # 检测可能导致灾难性回溯的嵌套量词模式（如 (a+)+, (?:a+)+, (a{2,})*）
+        if _is_dangerous_regex(keyword):
             return jsonify({"error": _api_t("regex_nested")}), 400
         try:
             pattern = re.compile(keyword, re.IGNORECASE)
@@ -1039,7 +1298,7 @@ def api_search_content():
     if use_regex:
         if len(keyword) > 200:
             return jsonify({"error": _api_t("regex_too_long")}), 400
-        if re.search(r'\([^)]*[+*][^)]*\)[+*]', keyword):
+        if _is_dangerous_regex(keyword):
             return jsonify({"error": _api_t("regex_nested")}), 400
         try:
             pattern = re.compile(keyword, re.IGNORECASE)
@@ -1165,7 +1424,7 @@ def api_save_file():
 
     跨平台说明:
         使用 Python 标准 open() 写入，Windows 和 macOS/Linux 均兼容。
-        统一使用 UTF-8 编码写入。
+        自动检测原始文件编码并以相同编码写回，检测失败时回退到 UTF-8。
     """
     data = request.get_json(silent=True) or {}
     raw = data.get("path", "")
@@ -1191,8 +1450,9 @@ def api_save_file():
         except Exception:
             pass  # 备份失败不阻止保存
 
-        # 以 UTF-8 编码写入文件
-        with open(real, 'w', encoding='utf-8', newline='') as f:
+        # 检测原始文件编码，保留原编码写回；检测失败时回退到 UTF-8
+        original_enc = detect_encoding(real) or 'utf-8'
+        with open(real, 'w', encoding=original_enc, newline='') as f:
             f.write(content)
 
         log_access("EDIT", real)
@@ -1205,7 +1465,8 @@ def api_save_file():
     except PermissionError:
         return jsonify({"error": _api_t("no_permission_write")}), 403
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Unhandled error: %s", e)
+        return jsonify({"error": _api_t("internal_error")}), 500
 
 
 @app.route("/api/download")
@@ -1232,7 +1493,7 @@ def api_raw():
     if (real is None or not os.path.isfile(real)) and getattr(sys, 'frozen', False):
         bundle_path = os.path.join(BUNDLE_DIR, raw.replace('/', os.sep).lstrip(os.sep))
         bundle_path = os.path.normpath(bundle_path)
-        if os.path.isfile(bundle_path) and bundle_path.startswith(BUNDLE_DIR):
+        if os.path.isfile(bundle_path) and (bundle_path == BUNDLE_DIR or bundle_path.startswith(BUNDLE_DIR + os.sep)):
             real = bundle_path
     if real is None or not os.path.isfile(real):
         abort(404)
@@ -1251,8 +1512,10 @@ def api_info():
         return jsonify({"error": _api_t("path_not_exist")}), 404
     try:
         stat = os.stat(real)
-    except (PermissionError, OSError) as e:
-        return jsonify({"error": str(e)}), 403
+    except PermissionError:
+        return jsonify({"error": _api_t("no_permission")}), 403
+    except OSError:
+        return jsonify({"error": _api_t("path_not_found")}), 404
 
     is_dir = os.path.isdir(real)
     name = os.path.basename(real)
@@ -1285,25 +1548,25 @@ def api_batch_download():
 
     log_access("BATCH_DOWNLOAD", f"{len(paths)} files")
 
-    # 在内存中创建 zip 文件
-    mem_zip = io.BytesIO()
+    # 创建 zip 文件（小于 100MB 在内存中，超过自动溢出到磁盘临时文件）
+    mem_zip = tempfile.SpooledTemporaryFile(max_size=100 * 1024 * 1024)
     try:
-      with zipfile.ZipFile(mem_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for raw_path in paths:
-            real = safe_path(raw_path)
-            if real and os.path.isfile(real):
-                arcname = os.path.basename(real)
-                existing = [n for n in zf.namelist()]
-                if arcname in existing:
-                    base, ext = os.path.splitext(arcname)
-                    i = 1
-                    while f"{base}_{i}{ext}" in existing:
-                        i += 1
-                    arcname = f"{base}_{i}{ext}"
-                try:
-                    zf.write(real, arcname)
-                except (PermissionError, OSError):
-                    continue
+        with zipfile.ZipFile(mem_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for raw_path in paths:
+                real = safe_path(raw_path)
+                if real and os.path.isfile(real):
+                    arcname = os.path.basename(real)
+                    existing = [n for n in zf.namelist()]
+                    if arcname in existing:
+                        base, ext = os.path.splitext(arcname)
+                        i = 1
+                        while f"{base}_{i}{ext}" in existing:
+                            i += 1
+                        arcname = f"{base}_{i}{ext}"
+                    try:
+                        zf.write(real, arcname)
+                    except (PermissionError, OSError):
+                        continue
     except MemoryError:
         return jsonify({"error": _api_t("memory_pack_error")}), 400
 
@@ -1401,7 +1664,8 @@ def api_mkdir():
         log_access("MKDIR", new_dir)
         return jsonify({"ok": True, "path": new_dir.replace("\\", "/")})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Unhandled error: %s", e)
+        return jsonify({"error": _api_t("internal_error")}), 500
 
 
 @app.route("/api/mkfile", methods=["POST"])
@@ -1442,7 +1706,8 @@ def api_mkfile():
     except PermissionError:
         return jsonify({"error": _api_t("no_permission_create")}), 403
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Unhandled error: %s", e)
+        return jsonify({"error": _api_t("internal_error")}), 500
 
 
 @app.route("/api/delete", methods=["POST"])
@@ -1455,16 +1720,6 @@ def api_delete():
     请求体: {"path": "C:/path/to/file", "recursive": false}
     recursive=true 时递归删除非空文件夹（危险操作，需前端二次确认）。
     """
-    # 系统关键目录黑名单，禁止删除
-    _PROTECTED = {
-        # Windows
-        "c:\\", "c:\\windows", "c:\\program files", "c:\\program files (x86)",
-        "c:\\users", "c:\\system32",
-        # macOS / Linux
-        "/", "/bin", "/sbin", "/usr", "/etc", "/var", "/tmp",
-        "/system", "/library", "/private",
-    }
-
     data = request.get_json(silent=True) or {}
     raw = data.get("path", "")
     recursive = data.get("recursive", False)
@@ -1476,7 +1731,7 @@ def api_delete():
         return jsonify({"error": _api_t("file_protected_del")}), 403
 
     # 检查是否为受保护的系统目录
-    if os.path.normpath(real).lower() in _PROTECTED:
+    if os.path.normpath(real).lower() in _PROTECTED_PATHS:
         return jsonify({"error": _api_t("protected_sys_dir")}), 403
 
     try:
@@ -1499,7 +1754,8 @@ def api_delete():
     except PermissionError:
         return jsonify({"error": _api_t("no_permission_del")}), 403
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Unhandled error: %s", e)
+        return jsonify({"error": _api_t("internal_error")}), 500
 
 
 @app.route("/api/rename", methods=["POST"])
@@ -1542,7 +1798,8 @@ def api_rename():
     except PermissionError:
         return jsonify({"error": _api_t("no_permission_rename")}), 403
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Unhandled error: %s", e)
+        return jsonify({"error": _api_t("internal_error")}), 500
 
 
 # ════════════════════════════════════════════════════════════
@@ -1552,8 +1809,11 @@ def api_rename():
 @app.route("/api/clipboard", methods=["GET"])
 @require_auth
 def api_clipboard_get():
-    """获取共享剪贴板内容。"""
-    return jsonify(clipboard_data)
+    """获取当前用户的剪贴板内容（多用户模式下按用户隔离）。"""
+    key = _clipboard_key()
+    with _state_lock:
+        data = clipboard_data.get(key, {"text": "", "updated": ""})
+        return jsonify(dict(data))
 
 
 @app.route("/api/clipboard", methods=["POST"])
@@ -1561,15 +1821,19 @@ def api_clipboard_get():
 @require_writable
 def api_clipboard_set():
     """
-    设置共享剪贴板内容。
+    设置当前用户的剪贴板内容（多用户模式下按用户隔离）。
 
     请求体: {"text": "要共享的文本"}
     """
     data = request.get_json(silent=True) or {}
     text = data.get("text", "")
-    clipboard_data["text"] = text
-    clipboard_data["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_access("CLIPBOARD", f"set {len(text)} chars")
+    key = _clipboard_key()
+    with _state_lock:
+        clipboard_data[key] = {
+            "text": text,
+            "updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    log_access("CLIPBOARD", f"set {len(text)} chars user={key}")
     return jsonify({"ok": True})
 
 
@@ -1580,8 +1844,9 @@ def api_clipboard_set():
 @app.route("/api/bookmarks", methods=["GET"])
 @require_auth
 def api_bookmarks_get():
-    """获取所有书签。"""
-    return jsonify(load_bookmarks())
+    """获取当前用户的书签（多用户模式下按用户隔离）。"""
+    username = _get_current_username() if USERS else None
+    return jsonify(load_bookmarks(username))
 
 
 @app.route("/api/bookmarks", methods=["POST"])
@@ -1589,7 +1854,7 @@ def api_bookmarks_get():
 @require_writable
 def api_bookmarks_add():
     """
-    添加书签。
+    添加书签（多用户模式下按用户隔离）。
 
     请求体: {"path": "C:/path", "name": "自定义名称（可选）"}
     """
@@ -1600,7 +1865,8 @@ def api_bookmarks_add():
     if not path:
         return jsonify({"error": _api_t("path_empty")}), 400
 
-    bookmarks = load_bookmarks()
+    username = _get_current_username() if USERS else None
+    bookmarks = load_bookmarks(username)
     # 检查是否已存在
     for b in bookmarks:
         if b["path"] == path:
@@ -1611,7 +1877,7 @@ def api_bookmarks_add():
         "name": name,
         "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
     })
-    save_bookmarks(bookmarks)
+    save_bookmarks(bookmarks, username)
     log_access("BOOKMARK_ADD", path)
     return jsonify({"ok": True})
 
@@ -1621,15 +1887,16 @@ def api_bookmarks_add():
 @require_writable
 def api_bookmarks_delete():
     """
-    删除书签。
+    删除书签（多用户模式下按用户隔离）。
 
     请求体: {"path": "C:/path"}
     """
     data = request.get_json(silent=True) or {}
     path = data.get("path", "")
-    bookmarks = load_bookmarks()
+    username = _get_current_username() if USERS else None
+    bookmarks = load_bookmarks(username)
     bookmarks = [b for b in bookmarks if b["path"] != path]
-    save_bookmarks(bookmarks)
+    save_bookmarks(bookmarks, username)
     log_access("BOOKMARK_DEL", path)
     return jsonify({"ok": True})
 
@@ -1687,7 +1954,8 @@ def api_copy():
     except PermissionError:
         return jsonify({"error": _api_t("no_permission")}), 403
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Unhandled error: %s", e)
+        return jsonify({"error": _api_t("internal_error")}), 500
 
 
 @app.route("/api/move", methods=["POST"])
@@ -1734,7 +2002,8 @@ def api_move():
     except PermissionError:
         return jsonify({"error": _api_t("no_permission")}), 403
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Unhandled error: %s", e)
+        return jsonify({"error": _api_t("internal_error")}), 500
 
 
 # ════════════════════════════════════════════════════════════
@@ -1757,7 +2026,7 @@ def api_download_folder():
     folder_name = os.path.basename(real)
     log_access("DOWNLOAD_FOLDER", real)
 
-    mem_zip = io.BytesIO()
+    mem_zip = tempfile.SpooledTemporaryFile(max_size=100 * 1024 * 1024)
     try:
         with zipfile.ZipFile(mem_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
             for root, dirs, files in os.walk(real):
@@ -1817,7 +2086,8 @@ def api_zip_list():
     except zipfile.BadZipFile:
         return jsonify({"error": _api_t("invalid_zip")}), 400
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Unhandled error: %s", e)
+        return jsonify({"error": _api_t("internal_error")}), 500
 
 
 @app.route("/api/extract", methods=["POST"])
@@ -1858,7 +2128,8 @@ def api_extract():
     except PermissionError:
         return jsonify({"error": _api_t("no_permission_extract")}), 403
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Unhandled error: %s", e)
+        return jsonify({"error": _api_t("internal_error")}), 500
 
 
 # ════════════════════════════════════════════════════════════
@@ -1888,15 +2159,15 @@ def api_share_create():
 
     # 清理过期 token（每次创建时顺带清理，避免内存持续增长）
     now_ts = datetime.now().timestamp()
-    expired_keys = [k for k, v in share_tokens.items() if now_ts > v["expires_at"]]
-    for k in expired_keys:
-        share_tokens.pop(k, None)
-
     token = secrets.token_urlsafe(16)
-    share_tokens[token] = {
-        "path": real,
-        "expires_at": now_ts + expires,
-    }
+    with _state_lock:
+        expired_keys = [k for k, v in share_tokens.items() if now_ts > v["expires_at"]]
+        for k in expired_keys:
+            share_tokens.pop(k, None)
+        share_tokens[token] = {
+            "path": real,
+            "expires_at": now_ts + expires,
+        }
     log_access("SHARE_CREATE", real)
     return jsonify({
         "ok": True,
@@ -1912,12 +2183,13 @@ def share_download(token):
     通过临时 token 下载文件，无需登录。
     token 过期后返回 410 Gone。
     """
-    info = share_tokens.get(token)
-    if info is None:
-        abort(404)
-    if datetime.now().timestamp() > info["expires_at"]:
-        share_tokens.pop(token, None)
-        abort(410)  # Gone
+    with _state_lock:
+        info = share_tokens.get(token)
+        if info is None:
+            abort(404)
+        if datetime.now().timestamp() > info["expires_at"]:
+            share_tokens.pop(token, None)
+            abort(410)  # Gone
 
     real = info["path"]
     if not os.path.isfile(real):
@@ -1973,13 +2245,14 @@ HTML_TEMPLATE = r"""
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>File Browser</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github-dark.min.css">
-<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mammoth@1/mammoth.browser.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0/dist/xlsx.full.min.js"></script>
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/highlight.min.js"></script>
+<script src="/static/vendor/mermaid.min.js"></script>
+<link rel="stylesheet" href="/static/vendor/github-dark.min.css">
+<script src="/static/vendor/qrcode.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+<script src="/static/vendor/mammoth.browser.min.js"></script>
+<script src="/static/vendor/xlsx.full.min.js"></script>
 <style>
 :root {
     --bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e4e4e7;--text2:#9ca3af;
@@ -1997,6 +2270,13 @@ HTML_TEMPLATE = r"""
 /* ── 拖拽上传遮罩 ── */
 #dropOverlay{display:none;position:fixed;inset:0;background:rgba(99,102,241,.15);border:3px dashed var(--accent);z-index:800;border-radius:16px;pointer-events:none;align-items:center;justify-content:center;font-size:24px;color:var(--accent)}
 #dropOverlay.show{display:flex}
+/* ── 上传进度条 ── */
+.upload-progress{width:100%;margin-top:8px}
+.upload-progress-bar{width:100%;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.upload-progress-fill{height:100%;background:var(--accent);border-radius:3px;transition:width .2s;width:0%}
+.upload-progress-text{font-size:12px;color:var(--text2);margin-top:4px;text-align:center}
+#dragUploadToast{display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 20px;z-index:900;min-width:280px;box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+#dragUploadToast .upload-progress-text{margin-top:2px}
 /* ── 网格视图 ── */
 #content.grid-view{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;padding:8px 0}
 #content.grid-view .file-item{flex-direction:column;align-items:center;padding:14px 8px;gap:6px;text-align:center;border-radius:12px;height:auto}
@@ -2230,6 +2510,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   <div class="header">
     <div class="header-top">
       <div class="logo">&#x1f4c2; <span>File Browser</span></div>
+      <button class="tool-btn" id="logoutBtn" onclick="doLogout()" style="display:none" data-i18n="logout">&#x1f6aa; 登出</button>
     </div>
     <!-- Toolbar -->
     <div class="toolbar" id="toolbar">
@@ -2290,6 +2571,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   <div class="status"><span class="status-dot"></span><span id="statusText" data-i18n="statusReady">就绪</span></div>
   <div class="loading" id="loading"><div class="spinner"></div></div>
   <div id="dropOverlay" data-i18n="dropHint">&#x1f4e4; 松开鼠标上传文件</div>
+  <div id="dragUploadToast"><div class="upload-progress-text" id="dragUploadText"></div><div class="upload-progress"><div class="upload-progress-bar"><div class="upload-progress-fill" id="dragUploadBar"></div></div></div></div>
   <div id="content" class="file-list"></div>
 </div>
 
@@ -2303,7 +2585,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
         <button class="modal-btn modal-btn-primary" id="modalSave" style="display:none" onclick="saveFile()" data-i18n="modalSave">&#x1f4be; 保存</button>
         <button class="modal-btn modal-btn-close" id="modalCancelEdit" style="display:none" onclick="cancelEdit()" data-i18n="modalCancelEdit">取消编辑</button>
         <button class="modal-btn modal-btn-primary" id="modalDownload" data-i18n="modalDownload">下载</button>
-        <button class="modal-btn modal-btn-close" id="modalShare" style="display:none" onclick="shareFile()" data-i18n="modalShare">&#x1f517; 分享</button>
+        <button class="modal-btn modal-btn-close" id="modalShare" style="display:none" onclick="showShareDialog()" data-i18n="modalShare">&#x1f517; 分享</button>
         <button class="modal-btn modal-btn-close" onclick="closeModal()" data-i18n="modalClose">关闭</button>
       </div>
     </div>
@@ -2341,7 +2623,7 @@ if(typeof marked!=='undefined'){marked.setOptions({breaks:true,gfm:true,highligh
 // ═══ Mermaid Setup ═══
 // 初始化 mermaid：深色主题，不自动渲染（我们手动控制渲染时机）
 if(typeof mermaid!=='undefined'){
-    mermaid.initialize({startOnLoad:false,theme:'dark',securityLevel:'loose',
+    mermaid.initialize({startOnLoad:false,theme:'dark',securityLevel:'strict',
         themeVariables:{primaryColor:'#6366f1',primaryTextColor:'#e4e4e7',lineColor:'#818cf8',secondaryColor:'#1a1d27'}});
 }
 
@@ -2364,7 +2646,7 @@ async function renderMermaidBlocks(container){
             // 用渲染结果替换原来的代码块
             const div=document.createElement('div');
             div.className='mermaid-rendered';
-            div.innerHTML=svg;
+            div.innerHTML=sanitizeHTML(svg);
             preEl.replaceWith(div);
         }catch(e){
             // 渲染失败时保留原始代码块，加一个错误提示
@@ -2408,6 +2690,8 @@ window.addEventListener("load",async()=>{
         showLoginPage();
     }else{
         showMainApp();
+        // 需要认证时显示登出按钮
+        if(r.need_auth){const lb=document.getElementById("logoutBtn");if(lb)lb.style.display=""}
     }
 });
 window.addEventListener("popstate",(e)=>{if(e.state&&e.state.path!==undefined)loadPath(e.state.path,false)});
@@ -2495,7 +2779,7 @@ function fetchList(path){
     .then(r=>{if(r.status===401){showLoginPage();throw"auth"}return r.json()})
     .then(data=>{
         loading.classList.remove("show");
-        if(data.error){content.innerHTML=`<div class="empty"><div class="empty-icon">&#x26a0;&#xfe0f;</div><div>${data.error}</div></div>`;return}
+        if(data.error){content.innerHTML=`<div class="empty"><div class="empty-icon">&#x26a0;&#xfe0f;</div><div>${eh(data.error)}</div></div>`;return}
         if(Array.isArray(data)){renderDrives(data)}
         else{
             renderFileList(data.items);
@@ -2757,6 +3041,7 @@ function showUpload(){
         </div>
         <div class="hint">${t("uploadHint")}</div>
         <button class="modal-btn modal-btn-primary" onclick="doUpload()" style="width:100%">${t("uploadBtn")}</button>
+        <div class="upload-progress" id="uploadProgress" style="display:none"><div class="upload-progress-bar"><div class="upload-progress-fill" id="uploadBar"></div></div><div class="upload-progress-text" id="uploadPercent"></div></div>
         <div id="uploadStatus" style="font-size:13px;color:var(--text2)"></div>
     </div>`);
     document.getElementById("uploadFiles").addEventListener("change",function(){
@@ -2768,12 +3053,20 @@ async function doUpload(){
     const files=document.getElementById("uploadFiles").files;
     if(!files.length){toast(t("selectFiles"));return}
     const status=document.getElementById("uploadStatus");
+    const progressWrap=document.getElementById("uploadProgress");
+    const bar=document.getElementById("uploadBar");
+    const pct=document.getElementById("uploadPercent");
     status.textContent=t("uploadUploading");
+    if(progressWrap){progressWrap.style.display="block";bar.style.width="0%";pct.textContent="0%"}
     const fd=new FormData();
     fd.append("path",currentPath);
     for(const f of files)fd.append("files",f);
     try{
-        const r=await fetch("/api/upload",{method:"POST",body:fd}).then(r=>r.json());
+        const r=await xhrUpload(fd,(percent,loaded,total)=>{
+            if(bar)bar.style.width=percent+"%";
+            if(pct)pct.textContent=`${percent}% (${formatBytes(loaded)} / ${formatBytes(total)})`;
+        });
+        if(bar)bar.style.width="100%";
         if(r.errors&&r.errors.length)status.textContent=`${t("uploadOkCount")} ${r.count}, ${t("uploadFailCount")}${r.errors.join(", ")}`;
         else{status.textContent=`${t("uploadDone")} ${r.count} ${t("uploadDoneUnit")}`;toast(`${t("uploaded")}${r.saved.join(", ")}`)}
         fetchList(currentPath);
@@ -2932,7 +3225,7 @@ function previewFile(path,name,type){
     const rawUrl=`/api/raw?path=${encodeURIComponent(path)}`;
     // 获取文件详情
     fetch(`/api/info?path=${encodeURIComponent(path)}`).then(r=>r.json()).then(info=>{
-        if(!info.error){detail.style.display="flex";detail.innerHTML=`<span class="file-detail-item"><span class="file-detail-label">${t("detailSize")}</span> ${info.size}</span><span class="file-detail-item"><span class="file-detail-label">${t("detailType")}</span> ${info.ext||info.type}</span><span class="file-detail-item"><span class="file-detail-label">${t("detailModified")}</span> ${info.modified}</span>`}
+        if(!info.error){detail.style.display="flex";detail.innerHTML=`<span class="file-detail-item"><span class="file-detail-label">${t("detailSize")}</span> ${eh(info.size)}</span><span class="file-detail-item"><span class="file-detail-label">${t("detailType")}</span> ${eh(info.ext||info.type)}</span><span class="file-detail-item"><span class="file-detail-label">${t("detailModified")}</span> ${eh(info.modified)}</span>`}
     }).catch(()=>{});
     // 所有文件类型均显示分享按钮
     document.getElementById("modalShare").style.display="";
@@ -2970,13 +3263,13 @@ function previewFile(path,name,type){
             }
             break;
         case 'markdown':fetch(`/api/file?path=${encodeURIComponent(path)}`).then(r=>r.json()).then(d=>{
-            if(d.error){body.innerHTML=`<div class="preview-error"><div class="icon">&#x26a0;&#xfe0f;</div><div>${d.error}</div></div>`}
+            if(d.error){body.innerHTML=`<div class="preview-error"><div class="icon">&#x26a0;&#xfe0f;</div><div>${eh(d.error)}</div></div>`}
             else{
                 currentPreviewContent=d.content;
                 document.getElementById("modalEdit").style.display=isReadOnly?"none":"";
                 try{
                     if(typeof marked!=='undefined'){
-                        body.innerHTML=`<div class="md-body">${marked.parse(d.content)}</div>`;
+                        body.innerHTML=`<div class="md-body">${sanitizeHTML(marked.parse(d.content))}</div>`;
                         bindMdLinks(body, path);
                         try{renderMermaidBlocks(body)}catch(me){}
                     }
@@ -2985,7 +3278,7 @@ function previewFile(path,name,type){
             }
         }).catch(()=>{body.innerHTML=`<div class="preview-error"><div class="icon">&#x274c;</div><div>${t("previewFail")}</div></div>`});break;
         case 'text':fetch(`/api/file?path=${encodeURIComponent(path)}`).then(r=>r.json()).then(d=>{
-            if(d.error){body.innerHTML=`<div class="preview-error"><div class="icon">&#x26a0;&#xfe0f;</div><div>${d.error}</div></div>`}
+            if(d.error){body.innerHTML=`<div class="preview-error"><div class="icon">&#x26a0;&#xfe0f;</div><div>${eh(d.error)}</div></div>`}
             else{
                 currentPreviewContent=d.content;
                 document.getElementById("modalEdit").style.display=isReadOnly?"none":"";
@@ -2996,7 +3289,7 @@ function previewFile(path,name,type){
             // ZIP 文件：显示内容列表（仅 .zip 支持预览）
             if(path.toLowerCase().endsWith('.zip')){
                 fetch(`/api/zip-list?path=${encodeURIComponent(path)}`).then(r=>r.json()).then(d=>{
-                    if(d.error){body.innerHTML=`<div class="preview-error"><div class="icon">&#x26a0;&#xfe0f;</div><div>${d.error}</div></div>`}
+                    if(d.error){body.innerHTML=`<div class="preview-error"><div class="icon">&#x26a0;&#xfe0f;</div><div>${eh(d.error)}</div></div>`}
                     else{
                         const rows=d.items.map(it=>`<tr><td style="padding:4px 8px">${eh(it.name)}</td><td style="padding:4px 8px;color:var(--text2);text-align:right">${it.is_dir?"--":it.size}</td></tr>`).join("");
                         body.innerHTML=`<div style="padding:16px"><div style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between"><span style="color:var(--text2);font-size:13px">${d.count} ${t("zipEntries")}</span><button class="modal-btn modal-btn-primary" onclick="extractZip('${esc(path)}')">&#x1f4e6; ${t("zipExtractHere")}</button></div><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="border-bottom:1px solid var(--border)"><th style="padding:4px 8px;text-align:left">${t("zipFilename")}</th><th style="padding:4px 8px;text-align:right">${t("detailSize")}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -3009,23 +3302,13 @@ function previewFile(path,name,type){
         case 'office':
             (async()=>{
                 const ext=path.split(".").pop().toLowerCase();
-                // 大文件保护：超过 5MB 的 Office 文件跳过在线预览，直接提供下载
-                const _sizeLimit=100*1024*1024;
-                try{
-                    const headResp=await fetch(rawUrl,{method:"HEAD"});
-                    const clen=parseInt(headResp.headers.get("content-length")||"0",10);
-                    if(clen>_sizeLimit){
-                        body.innerHTML=`<div class="preview-error"><div class="icon">&#x1f4c4;</div><div>${t("previewOfficeUnsupported")} (${(clen/1024/1024).toFixed(1)}MB)</div><div style="margin-top:12px"><button class="modal-btn modal-btn-primary" onclick="downloadFile('${esc(path)}')">${t("downloadFileBtn")}</button></div></div>`;
-                        return;
-                    }
-                }catch(e){}
                 // DOCX：使用 mammoth.js 转为 HTML
                 if(ext==="docx"&&typeof mammoth!=="undefined"){
                     try{
                         const resp=await fetch(rawUrl);
                         const buf=await resp.arrayBuffer();
                         const result=await mammoth.convertToHtml({arrayBuffer:buf});
-                        body.innerHTML=`<div class="md-body" style="padding:20px">${result.value}</div>`;
+                        body.innerHTML=`<div class="md-body" style="padding:20px">${sanitizeHTML(result.value)}</div>`;
                     }catch(e){body.innerHTML=`<div class="preview-error"><div class="icon">&#x26a0;&#xfe0f;</div><div>${t("previewDocxFail")}${eh(e.message)}</div><div style="margin-top:12px"><button class="modal-btn modal-btn-primary" onclick="downloadFile('${esc(path)}')">${t("downloadFileBtn")}</button></div></div>`}
                 // XLSX / XLS：使用 SheetJS 渲染为表格
                 }else if((ext==="xlsx"||ext==="xls")&&typeof XLSX!=="undefined"){
@@ -3040,7 +3323,7 @@ function previewFile(path,name,type){
                             html+=`<h3 style="margin:16px 0 8px;color:var(--text)">${eh(name)}</h3>${tbl}`;
                         }
                         html+='</div>';
-                        body.innerHTML=html;
+                        body.innerHTML=sanitizeHTML(html);
                         body.querySelectorAll("table").forEach(tbl=>{tbl.style.cssText="width:100%;border-collapse:collapse;font-size:13px";tbl.querySelectorAll("td,th").forEach(c=>{c.style.cssText="border:1px solid var(--border);padding:4px 8px"})});
                     }catch(e){body.innerHTML=`<div class="preview-error"><div class="icon">&#x26a0;&#xfe0f;</div><div>${t("previewXlsFail")}${eh(e.message)}</div><div style="margin-top:12px"><button class="modal-btn modal-btn-primary" onclick="downloadFile('${esc(path)}')">${t("downloadFileBtn")}</button></div></div>`}
                 }else{
@@ -3130,7 +3413,7 @@ function cancelEdit(){
     // 重新渲染预览
     const body=document.getElementById("modalBody");
     if(currentPreviewType==='markdown'&&typeof marked!=='undefined'){
-        body.innerHTML=`<div class="md-body">${marked.parse(currentPreviewContent)}</div>`;
+        body.innerHTML=`<div class="md-body">${sanitizeHTML(marked.parse(currentPreviewContent))}</div>`;
     }else{
         body.innerHTML=`<pre>${eh(currentPreviewContent)}</pre>`;
     }
@@ -3355,8 +3638,13 @@ function getFileTypeFromName(name){
         '.html','.htm','.css','.js','.ts','.jsx','.tsx','.vue','.svelte',
         '.scss','.sass','.less','.styl','.astro',
         '.ejs','.hbs','.pug','.njk','.liquid','.twig','.wxml','.wxss',
+        '.mjs','.cjs','.mts','.cts',
+        '.coffee','.litcoffee','.mdx','.svx',
+        '.erb','.haml','.slim','.j2','.jinja','.jinja2','.tmpl','.tpl','.mustache',
+        '.jsp','.asp','.aspx','.phtml',
         '.json','.jsonc','.json5','.ndjson','.jsonl','.geojson',
         '.xml','.yaml','.yml','.toml','.ini','.cfg','.conf','.proto','.avsc',
+        '.jsonnet','.libsonnet','.dhall',
         '.py','.pyw','.pyi',
         '.java','.kt','.kts','.scala','.groovy','.gradle',
         '.c','.h','.cpp','.hpp','.cc','.cxx','.hxx','.m','.mm',
@@ -3366,32 +3654,67 @@ function getFileTypeFromName(name){
         '.sql','.prisma',
         '.hs','.lhs','.ml','.mli','.ex','.exs','.erl','.hrl',
         '.clj','.cljs','.lisp','.el','.rkt','.tcl','.cr','.hx',
+        '.elm','.purs','.res','.resi','.re','.rei',
+        '.scm','.ss','.sml','.sig','.idr','.agda','.lean',
+        '.raku','.rakumod',
+        '.f','.f90','.f95','.f03','.f08','.for','.fpp',
+        '.pas','.pp','.lpr','.dpr',
+        '.cob','.cbl','.ada','.adb','.ads',
+        '.sol','.vy',
+        '.glsl','.hlsl','.wgsl','.metal','.vert','.frag','.comp','.cu','.cuh',
         '.sh','.bash','.zsh','.fish','.csh','.ksh','.bat','.cmd','.ps1','.psm1',
+        '.ahk','.au3','.awk','.sed','.applescript','.nix',
         '.reg','.inf','.vbs','.vba','.wsf',
         '.plist','.strings','.entitlements','.pbxproj',
         '.desktop','.service','.timer','.socket','.mount',
-        '.tf','.hcl','.properties','.sbt','.cmake','.mk','.mak','.cabal','.gemspec','.podspec',
+        '.tf','.tfvars','.hcl','.properties','.sbt','.cmake','.mk','.mak','.cabal','.gemspec','.podspec',
+        '.csproj','.vbproj','.fsproj','.sln','.vcxproj','.spec',
         '.htaccess','.nginx','.graphql','.gql',
         '.rst','.asciidoc','.adoc','.tex','.latex','.bib','.sty','.cls',
         '.dtd','.xsd','.xsl','.xslt',
+        '.org','.rmd','.rnw','.typ',
         '.srt','.vtt','.ass','.ssa','.sub','.lrc',
+        '.m3u','.m3u8','.cue','.ics','.vcf',
         '.pem','.crt','.csr','.key','.pub','.cer',
         '.diff','.patch','.asm','.s','.dockerfile'];
     if(textExts.includes(ext)) return 'text';
     // 无扩展名文件名匹配
     const n = name.split('/').pop().split('\\').pop().toLowerCase();
-    const textNames = ['makefile','dockerfile','vagrantfile','gemfile','rakefile','procfile',
-        'brewfile','justfile','license','licence','authors','contributors','changelog',
-        'readme','todo','copying','install','.gitignore','.gitattributes','.gitmodules',
-        '.dockerignore','.editorconfig','.prettierrc','.eslintrc','.babelrc','.npmrc',
-        '.env','.bashrc','.bash_profile','.zshrc','.vimrc','.profile'];
+    const textNames = ['makefile','dockerfile','containerfile','vagrantfile','gemfile','rakefile',
+        'procfile','brewfile','justfile','cmakelists.txt','jenkinsfile','snakefile',
+        'sconscript','sconstruct','podfile','cartfile','fastfile','appfile','dangerfile',
+        'guardfile','berksfile','capfile','thorfile','earthfile','tiltfile',
+        'build','build.bazel','workspace','workspace.bazel','buck',
+        'go.mod','go.sum','pipfile',
+        'license','licence','authors','contributors','changelog',
+        'readme','todo','copying','install','news','thanks',
+        '.gitignore','.gitattributes','.gitmodules','.gitconfig','.gitkeep','.mailmap',
+        '.dockerignore','.dockerfile',
+        '.prettierignore','.eslintignore','.helmignore','.slugignore',
+        '.editorconfig','.prettierrc','.eslintrc','.stylelintrc',
+        '.babelrc','.npmrc','.yarnrc','.nvmrc','.pylintrc','.flake8',
+        '.vimrc','.viminfo','.gvimrc','.nanorc','.emacs',
+        '.clang-format','.clang-tidy','.yamllint','.markdownlint','.rubocop',
+        '.ruby-version','.python-version','.node-version','.java-version','.tool-versions',
+        '.env','.env.local','.env.development','.env.production','.env.test','.env.staging','.env.example',
+        '.profile','.login','.logout',
+        '.bashrc','.bash_profile','.bash_login','.bash_logout','.bash_aliases',
+        '.zshrc','.zshenv','.zprofile','.zlogin','.zlogout',
+        '.cshrc','.tcshrc','.inputrc',
+        '.bash_history','.zsh_history','.history',
+        '.wgetrc','.curlrc','.screenrc','.netrc','.htpasswd','.condarc','.gemrc'];
     if(textNames.includes(n)) return 'text';
     return 'other';
 }
 
 // ═══ Utils ═══
+// CSRF 保护: 包装全局 fetch，为所有 POST 请求自动附加 X-Requested-With 头
+const _origFetch=window.fetch;window.fetch=function(url,opts){if(opts&&opts.method&&opts.method.toUpperCase()==="POST"){opts.headers=opts.headers||{};if(opts.headers instanceof Headers){opts.headers.set("X-Requested-With","XMLHttpRequest")}else if(Array.isArray(opts.headers)){opts.headers.push(["X-Requested-With","XMLHttpRequest"])}else{opts.headers["X-Requested-With"]="XMLHttpRequest"}}return _origFetch.call(this,url,opts)};
 function eh(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML}
-function esc(s){return s.replace(/\\/g,"/").replace(/'/g,"\\'").replace(/"/g,"&quot;").replace(/\n/g,"\\n").replace(/\r/g,"\\r")}
+function esc(s){return s.replace(/\\/g,"/").replace(/'/g,"\\'").replace(/`/g,"\\`").replace(/"/g,"&quot;").replace(/\n/g,"\\n").replace(/\r/g,"\\r")}
+function sanitizeHTML(html){return typeof DOMPurify!=='undefined'?DOMPurify.sanitize(html,{ADD_TAGS:['use'],ADD_ATTR:['target','xlink:href']}):eh(html)}
+function xhrUpload(fd,onProgress){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open("POST","/api/upload");xhr.setRequestHeader("X-Requested-With","XMLHttpRequest");if(onProgress)xhr.upload.addEventListener("progress",e=>{if(e.lengthComputable)onProgress(Math.round(e.loaded*100/e.total),e.loaded,e.total)});xhr.onload=()=>{try{resolve(JSON.parse(xhr.responseText))}catch(e){reject(e)}};xhr.onerror=()=>reject(new Error("upload failed"));xhr.send(fd)})}
+function formatBytes(b){if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB"}
 
 // ═══ Theme ═══
 let currentTheme=localStorage.getItem("fb_theme")||"dark";
@@ -3411,7 +3734,7 @@ function toggleTheme(){
 const I18N={
     zh:{upload:"⬆ 上传",mkdir:"📁+ 文件夹",mkfile:"📄+ 文件",select:"☐ 多选",selectAll:"☑ 全选",
         batchDl:"📦 打包下载",batchDel2:"🗑 批量删除",batchMove:"✂ 批量移动",batchCopy:"📋 批量复制",
-        clipboard:"📋 剪贴板",bookmarks:"⭐ 收藏",
+        clipboard:"📋 剪贴板",bookmarks:"⭐ 收藏",logout:"🚪 登出",
         loginHint:"请输入访问密码",loginBtn:"登录",loginFail:"登录失败",
         errWrongPwd:"密码错误",errRateLimit:"尝试次数过多，请稍后再试",errInvalidReq:"请求无效",
         searchPh:"搜索文件名或内容...",searchName:"文件名搜索",searchContent:"内容搜索",
@@ -3452,7 +3775,9 @@ const I18N={
         clipTitle:"📋 共享剪贴板",clipHint:"在手机和电脑之间共享文本。粘贴到这里，另一端即可获取。",
         clipPlaceholder:"输入要共享的文本...",clipLastUpdate:"上次更新: ",clipSaveBtn:"保存",
         bmTitle:"⭐ 收藏夹",bmEmpty:"还没有收藏",bmHint:"进入目录后点击 +⭐ 收藏",
-        shareTitle:"分享链接",shareHint:"链接有效期 1 小时，任何人无需登录即可下载：",shareCopyBtn:"📋 复制链接",
+        shareTitle:"分享链接",shareHint:"任何人无需登录即可下载：",shareCopyBtn:"📋 复制链接",
+        shareExpireLabel:"选择链接有效期：",shareCreateBtn:"生成分享链接",
+        shareExpire5m:"5 分钟",shareExpire30m:"30 分钟",shareExpire1h:"1 小时",shareExpire6h:"6 小时",shareExpire12h:"12 小时",shareExpire24h:"24 小时",
         pickerHint:"点击文件夹进入，在目标目录点击下方按钮确认",pickerConfirm:"确认选择当前目录",
         pickerLoading:"加载中...",pickerFail:"加载失败",pickerNoSub:"无子目录",pickerCopy:"复制",pickerMove:"移动",
         pickerPathPh:"目标目录路径",pickerGo:"跳转",
@@ -3468,7 +3793,7 @@ const I18N={
         uploadTitleTip:"上传文件",mkdirTitleTip:"新建文件夹",mkfileTitleTip:"新建文件",selectTitleTip:"多选模式",selectAllTitleTip:"全选/取消全选",batchDlTitleTip:"批量下载",batchDelTitleTip:"批量删除",batchMoveTitleTip:"批量移动",batchCopyTitleTip:"批量复制",clipboardTitleTip:"共享剪贴板",bookmarksTitleTip:"收藏夹"},
     en:{upload:"⬆ Upload",mkdir:"📁+ Folder",mkfile:"📄+ File",select:"☐ Select",selectAll:"☑ All",
         batchDl:"📦 Download",batchDel2:"🗑 Delete",batchMove:"✂ Move",batchCopy:"📋 Copy",
-        clipboard:"📋 Clipboard",bookmarks:"⭐ Bookmarks",
+        clipboard:"📋 Clipboard",bookmarks:"⭐ Bookmarks",logout:"🚪 Logout",
         loginHint:"Enter access password",loginBtn:"Login",loginFail:"Login failed",
         errWrongPwd:"Wrong password",errRateLimit:"Too many attempts, please try later",errInvalidReq:"Invalid request",
         searchPh:"Search filename or content...",searchName:"Filename",searchContent:"Content",
@@ -3509,7 +3834,9 @@ const I18N={
         clipTitle:"📋 Shared Clipboard",clipHint:"Share text between phone and PC. Paste here, access from the other device.",
         clipPlaceholder:"Enter text to share...",clipLastUpdate:"Last updated: ",clipSaveBtn:"Save",
         bmTitle:"⭐ Bookmarks",bmEmpty:"No bookmarks yet",bmHint:"Enter a directory and click +⭐ to bookmark",
-        shareTitle:"Share Link",shareHint:"Link valid for 1 hour. Anyone can download without login:",shareCopyBtn:"📋 Copy Link",
+        shareTitle:"Share Link",shareHint:"Anyone can download without login:",shareCopyBtn:"📋 Copy Link",
+        shareExpireLabel:"Select link expiration:",shareCreateBtn:"Create Share Link",
+        shareExpire5m:"5 minutes",shareExpire30m:"30 minutes",shareExpire1h:"1 hour",shareExpire6h:"6 hours",shareExpire12h:"12 hours",shareExpire24h:"24 hours",
         pickerHint:"Click folder to enter, then confirm at target",pickerConfirm:"Confirm Current Directory",
         pickerLoading:"Loading...",pickerFail:"Failed to load",pickerNoSub:"No subdirectories",pickerCopy:"Copy",pickerMove:"Move",
         pickerPathPh:"Target directory path",pickerGo:"Go",
@@ -3612,11 +3939,19 @@ async function uploadFiles(files){
     const fd=new FormData();
     fd.append("path",currentPath);
     for(const f of files)fd.append("files",f);
+    const dToast=document.getElementById("dragUploadToast");
+    const dBar=document.getElementById("dragUploadBar");
+    const dText=document.getElementById("dragUploadText");
+    if(dToast){dToast.style.display="block";dBar.style.width="0%";dText.textContent=t("uploadUploading")}
     try{
-        const r=await fetch("/api/upload",{method:"POST",body:fd}).then(r=>r.json());
+        const r=await xhrUpload(fd,(percent,loaded,total)=>{
+            if(dBar)dBar.style.width=percent+"%";
+            if(dText)dText.textContent=`${t("uploadUploading")} ${percent}% (${formatBytes(loaded)} / ${formatBytes(total)})`;
+        });
+        if(dToast)setTimeout(()=>{dToast.style.display="none"},2000);
         if(r.count>0){toast(`${t("dragUpload")} ${r.count} ${t("uploadDoneUnit")}`);fetchList(currentPath)}
         if(r.errors&&r.errors.length)toast(t("dragUploadFail")+r.errors.join(", "));
-    }catch(e){toast(t("dragUploadErr"))}
+    }catch(e){if(dToast)dToast.style.display="none";toast(t("dragUploadErr"))}
 }
 
 // ═══ Copy / Move ═══
@@ -3659,7 +3994,7 @@ function pickerLoadDir(dirPath){
         return;
     }
     fetch(`/api/list?path=${encodeURIComponent(dirPath)}&sort=name&order=asc`).then(r=>r.json()).then(data=>{
-        if(data.error){list.innerHTML=`<div style="padding:12px;color:var(--danger)">${data.error}</div>`;return}
+        if(data.error){list.innerHTML=`<div style="padding:12px;color:var(--danger)">${eh(data.error)}</div>`;return}
         input.value=data.path||dirPath;
         // 显示上级按钮 + 只显示子目录
         let html="";
@@ -3709,18 +4044,42 @@ async function extractZip(zipPath){
     else toast(r.error||t("extractFail"));
 }
 
+// ═══ Logout ═══
+async function doLogout(){
+    try{await fetch("/api/logout",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})}catch(e){}
+    location.reload();
+}
+
 // ═══ Share Link ═══
-async function shareFile(){
+function showShareDialog(){
     if(!currentPreviewPath){toast(t("noPreviewFile"));return}
+    openDialog(t("shareTitle"),`<div class="modal-form">
+        <label style="color:var(--text2);font-size:13px">${t("shareExpireLabel")}</label>
+        <select id="shareExpireSelect" class="modal-input" style="margin:8px 0">
+            <option value="300">${t("shareExpire5m")}</option>
+            <option value="1800">${t("shareExpire30m")}</option>
+            <option value="3600" selected>${t("shareExpire1h")}</option>
+            <option value="21600">${t("shareExpire6h")}</option>
+            <option value="43200">${t("shareExpire12h")}</option>
+            <option value="86400">${t("shareExpire24h")}</option>
+        </select>
+        <button class="modal-btn modal-btn-primary" onclick="doShare()" style="width:100%">${t("shareCreateBtn")}</button>
+        <div id="shareResult" style="display:none;margin-top:10px">
+            <input class="share-url" id="shareUrlInput" readonly onclick="this.select()">
+            <button class="modal-btn modal-btn-primary" onclick="copyShareUrl()" style="width:100%;margin-top:8px">${t("shareCopyBtn")}</button>
+        </div>
+    </div>`);
+}
+async function doShare(){
+    const sel=document.getElementById("shareExpireSelect");
+    const expires=parseInt(sel?sel.value:"3600")||3600;
     const r=await fetch("/api/share",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({path:currentPreviewPath,expires:3600})}).then(r=>r.json());
+        body:JSON.stringify({path:currentPreviewPath,expires})}).then(r=>r.json());
     if(!r.ok){toast(r.error||t("shareFail"));return}
     const fullUrl=location.origin+r.url;
-    openDialog(t("shareTitle"),`<div class="modal-form">
-        <div style="color:var(--text2);font-size:13px;margin-bottom:8px">${t("shareHint")}</div>
-        <input class="share-url" id="shareUrlInput" value="${fullUrl}" readonly onclick="this.select()">
-        <button class="modal-btn modal-btn-primary" onclick="copyShareUrl()" style="width:100%;margin-top:8px">${t("shareCopyBtn")}</button>
-    </div>`);
+    const result=document.getElementById("shareResult");
+    const input=document.getElementById("shareUrlInput");
+    if(result&&input){input.value=fullUrl;result.style.display="block"}
 }
 function copyShareUrl(){
     const input=document.getElementById("shareUrlInput");
@@ -3800,7 +4159,7 @@ function doSearch(q){
     .then(r=>{if(r.status===401){showLoginPage();throw"auth"}return r.json()})
     .then(data=>{
         loading.classList.remove("show");
-        if(data.error){content.innerHTML=`<div class="empty"><div class="empty-icon">&#x26a0;&#xfe0f;</div><div>${data.error}</div></div>`;return}
+        if(data.error){content.innerHTML=`<div class="empty"><div class="empty-icon">&#x26a0;&#xfe0f;</div><div>${eh(data.error)}</div></div>`;return}
         const results=data.results||[];
         if(!results.length){content.innerHTML=`<div class="empty"><div class="empty-icon">&#x1f50d;</div><div>${t("searchNoResult")}</div></div>`;return}
         renderFileList(results);
@@ -3839,6 +4198,11 @@ if __name__ == "__main__":
         if _a == "--lang" and _i + 1 < len(sys.argv) and sys.argv[_i + 1] in ("zh", "en"):
             _cli_lang = sys.argv[_i + 1]
             break
+
+    # SSL/HTTPS 配置（可通过 config.json 或 CLI 参数设置）
+    _ssl_cert = None
+    _ssl_key = None
+    _use_https = False
     # 终端 i18n 字典
     _TL = {
         "zh": {
@@ -3910,6 +4274,26 @@ if __name__ == "__main__":
     }
     def _t(k): return _TL[_cli_lang].get(k, _TL["en"].get(k, k))
 
+    # ── 加载 config.json（如果存在）──
+    _config_path = os.path.join(DATA_DIR, "config.json")
+    if os.path.isfile(_config_path):
+        try:
+            with open(_config_path, 'r', encoding='utf-8') as _cf:
+                _config = json.load(_cf)
+            if "port" in _config:           PORT = int(_config["port"])
+            if "password" in _config:       PASSWORD = _config["password"]
+            if "roots" in _config:          ALLOWED_ROOTS = list(_config["roots"])
+            if "read_only" in _config:      READ_ONLY = bool(_config["read_only"])
+            if "prevent_sleep" in _config:  PREVENT_SLEEP = bool(_config["prevent_sleep"])
+            if "lang" in _config and _config["lang"] in ("zh", "en"):
+                _cli_lang = _config["lang"]
+            if "users" in _config:          USERS = dict(_config["users"])
+            if "ssl_cert" in _config:       _ssl_cert = _config["ssl_cert"]
+            if "ssl_key" in _config:        _ssl_key = _config["ssl_key"]
+            sys.stderr.write(f"  [INFO] Loaded config from {_config_path}\n")
+        except Exception as e:
+            sys.stderr.write(f"  [WARN] Failed to load config.json: {e}\n")
+
     # ── 命令行参数解析 ──
     import argparse
     parser = argparse.ArgumentParser(
@@ -3926,6 +4310,10 @@ if __name__ == "__main__":
     parser.add_argument("--read-only", action="store_true", help=_t("h_read_only"))
     parser.add_argument("--no-interactive", "-y", action="store_true", help=_t("h_no_interactive"))
     parser.add_argument("--lang", type=str, default=None, choices=["zh", "en"], help=_t("h_lang"))
+    parser.add_argument("--ssl-cert", type=str, default=None, metavar="FILE",
+                        help="SSL certificate file path (enables HTTPS)")
+    parser.add_argument("--ssl-key", type=str, default=None, metavar="FILE",
+                        help="SSL private key file path (enables HTTPS)")
     args = parser.parse_args()
     if args.lang:
         _cli_lang = args.lang
@@ -3946,6 +4334,22 @@ if __name__ == "__main__":
         PREVENT_SLEEP = False
     if args.read_only:
         READ_ONLY = True
+    if args.ssl_cert:
+        _ssl_cert = args.ssl_cert
+    if args.ssl_key:
+        _ssl_key = args.ssl_key
+
+    # SSL 参数校验
+    if bool(_ssl_cert) != bool(_ssl_key):
+        sys.stderr.write("  [ERROR] --ssl-cert and --ssl-key must both be specified\n")
+        sys.exit(1)
+    if _ssl_cert and not os.path.isfile(_ssl_cert):
+        sys.stderr.write(f"  [ERROR] SSL cert file not found: {_ssl_cert}\n")
+        sys.exit(1)
+    if _ssl_key and not os.path.isfile(_ssl_key):
+        sys.stderr.write(f"  [ERROR] SSL key file not found: {_ssl_key}\n")
+        sys.exit(1)
+    _use_https = bool(_ssl_cert and _ssl_key)
 
     # ── 交互式启动引导 ──
     # 如果没有传命令行参数（除了 --no-interactive），则进入交互式引导
@@ -4095,15 +4499,15 @@ if __name__ == "__main__":
 
     files_ok, tampered_files = _check_file_integrity()
     if not files_ok:
-            sys.stderr.write("\n")
-            sys.stderr.write("=" * 54 + "\n")
-            sys.stderr.write("  [ERROR] Protected files have been tampered!\n")
-            for tf in tampered_files:
-                sys.stderr.write(f"  - {tf}\n")
-            sys.stderr.write("  Original author: \u767d\u767dLOVE\u5c39\u5c39\n")
-            sys.stderr.write("  Run with original files or contact the author.\n")
-            sys.stderr.write("=" * 54 + "\n")
-            sys.exit(1)
+        sys.stderr.write("\n")
+        sys.stderr.write("=" * 54 + "\n")
+        sys.stderr.write("  [ERROR] Protected files have been tampered!\n")
+        for tf in tampered_files:
+            sys.stderr.write(f"  - {tf}\n")
+        sys.stderr.write("  Original author: \u767d\u767dLOVE\u5c39\u5c39\n")
+        sys.stderr.write("  Run with original files or contact the author.\n")
+        sys.stderr.write("=" * 54 + "\n")
+        sys.exit(1)
 
     # 确定访问密码
     if PASSWORD is None:
@@ -4114,7 +4518,8 @@ if __name__ == "__main__":
         access_password = PASSWORD
 
     ip = get_local_ip()
-    url = f"http://{ip}:{PORT}"
+    _scheme = "https" if _use_https else "http"
+    url = f"{_scheme}://{ip}:{PORT}"
 
     # 使用 sys.stderr.write 确保信息一定能输出
     # （Flask 会接管 stdout，但 stderr 不受影响）
@@ -4128,9 +4533,9 @@ if __name__ == "__main__":
 
     banner("")
     banner("=" * 54)
-    banner("  [File Browser v2.1] started")
+    banner(f"  [File Browser v{__version__}] started")
     banner("=" * 54)
-    banner(f"  Local:    http://localhost:{PORT}")
+    banner(f"  Local:    {_scheme}://localhost:{PORT}")
     banner(f"  Phone:    {url}")
     if USERS:
         banner(f"  Users:    {len(USERS)} user(s):")
@@ -4152,6 +4557,7 @@ if __name__ == "__main__":
         sleep_ok = prevent_sleep_start()
     banner(f"  Sleep:    {'blocked' if sleep_ok else 'not blocked' if PREVENT_SLEEP else 'allowed'}")
     banner(f"  Mode:     {'READ-ONLY' if READ_ONLY else 'full access'}")
+    banner(f"  HTTPS:    {'enabled' if _use_https else 'disabled'}")
     banner(f"  Log:      {ACCESS_LOG_FILE}")
     banner("=" * 54)
     banner("  Press Ctrl+C to stop")
@@ -4159,7 +4565,9 @@ if __name__ == "__main__":
     banner("")
 
     try:
-        app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
+        _ssl_ctx = (_ssl_cert, _ssl_key) if _use_https else None
+        app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True,
+                ssl_context=_ssl_ctx)
     except KeyboardInterrupt:
         pass
     finally:

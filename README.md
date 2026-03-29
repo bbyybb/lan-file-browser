@@ -119,7 +119,7 @@ python file_browser.py --help
 
 ```
 ======================================================
-  [File Browser v2.1] started
+  [File Browser v2.1.2] started
 ======================================================
   Local:    http://localhost:25600
   Phone:    http://192.168.1.100:25600
@@ -138,11 +138,11 @@ python file_browser.py --help
 | 磁盘浏览 | Windows 自动识别 C:\、D:\ 等盘符；macOS/Linux 从 `/` 开始 |
 | 面包屑导航 | 顶部路径条，点击任意层级可快速跳转 |
 | 排序与筛选 | 按名称/大小/创建时间/修改时间排序，按文件类型或扩展名筛选 |
-| 目录收藏 | 将常用目录添加到收藏夹，一键直达 |
+| 目录收藏 | 将常用目录添加到收藏夹，一键直达；多用户模式下按用户隔离 |
 | 记住位置 | 自动回到上次浏览的目录（每台设备独立记忆） |
 | **文件复制** | 可视化目录选择器选择目标，同名自动加 `_copy` 后缀 |
 | **文件移动** | 可视化目录选择器选择目标，支持浏览导航 |
-| 上传文件 | 点击上传按钮或**直接拖拽文件到页面** |
+| 上传文件 | 点击上传按钮或**直接拖拽文件到页面**，支持上传进度条显示 |
 | 新建文件/文件夹 | 在当前目录创建，支持输入初始内容 |
 | 重命名 / 删除 | 重命名支持名称冲突检测；删除非空文件夹需二次确认后**递归删除** |
 
@@ -167,8 +167,8 @@ python file_browser.py --help
 | 批量打包下载 | 多选文件打包 zip 下载 |
 | **批量操作** | 多选后批量删除、批量移动、批量复制，支持一键全选 |
 | **文件夹整体下载** | 点击文件夹的下载按钮，递归打包为 zip |
-| **临时分享链接** | 预览弹窗中点击"分享"，生成 1 小时有效的公开下载链接，对方无需登录 |
-| 共享剪贴板 | 手机和电脑之间快速互传文本 |
+| **临时分享链接** | 预览弹窗中点击"分享"，可选择有效期（5 分钟 ~ 24 小时），生成公开下载链接，对方无需登录 |
+| 共享剪贴板 | 手机和电脑之间快速互传文本；多用户模式下按用户隔离 |
 
 ### 搜索
 
@@ -186,7 +186,7 @@ python file_browser.py --help
 | **网格 / 列表视图** | 网格模式下图片自动显示缩略图 |
 | **中 / 英语言切换** | 工具栏一键切换界面语言 |
 | 移动端适配 | 触屏优化，手指操作友好 |
-| 密码保护 | 每次启动自动生成 32 位高强度密码，支持自定义或禁用 |
+| 密码保护 | 每次启动自动生成 32 位高强度密码，支持自定义或禁用；登录后可随时登出 |
 | **多用户多密码** | 管理员密码（完全权限）+ 只读密码（仅浏览和下载），适合教师/团队场景 |
 | **目录白名单** | 配置 `ALLOWED_ROOTS` 限制只能访问指定目录，未列入的路径全部禁止 |
 | 二维码 | 登录页自动显示访问地址二维码，手机扫码即开 |
@@ -200,7 +200,7 @@ python file_browser.py --help
 | 项目 | 要求 |
 |------|------|
 | Python | 3.8+ |
-| 依赖 | Flask（`pip install flask`，唯一依赖） |
+| 依赖 | Flask 2.0+（`pip install flask`，唯一运行时依赖） |
 | 网络 | 电脑和手机在同一局域网 |
 | 浏览器 | Chrome（推荐）、Safari、Firefox、Edge |
 | 系统 | Windows 10/11、macOS 10.15+、Linux |
@@ -221,7 +221,7 @@ python file_browser.py --help
 
 ## 配置说明
 
-有两种方式配置参数，**命令行参数优先于文件配置**：
+有三种方式配置参数，**优先级：命令行参数 > config.json > 文件默认值**：
 
 ### 方式一：命令行参数（临时生效，不改文件）
 
@@ -235,11 +235,38 @@ python file_browser.py --help
 | `--no-sleep` | 不阻止系统睡眠 | `--no-sleep` |
 | `--allow-sleep` | 同 `--no-sleep` | `--allow-sleep` |
 | `--lang` | 界面语言（终端 + 浏览器） | `--lang en` |
+| `--ssl-cert` | SSL 证书文件路径（启用 HTTPS） | `--ssl-cert cert.pem` |
+| `--ssl-key` | SSL 私钥文件路径（启用 HTTPS） | `--ssl-key key.pem` |
 | `-y` | 跳过交互式引导 | `-y` |
 
 > 传了命令行参数时自动跳过交互式引导；不传参数则进入引导。
 
-### 方式二：修改文件（永久生效）
+### 方式二：config.json 配置文件（永久生效，推荐）
+
+在 DATA_DIR（exe 所在目录或脚本目录）下创建 `config.json`，程序启动时自动加载。命令行参数会覆盖 config.json 中的同名配置。
+
+支持字段：`port`、`password`、`roots`、`read_only`、`prevent_sleep`、`lang`、`users`、`ssl_cert`、`ssl_key`
+
+```json
+{
+  "port": 8080,
+  "password": "my-secret",
+  "roots": ["D:/shared", "E:/docs"],
+  "read_only": false,
+  "prevent_sleep": true,
+  "lang": "zh",
+  "ssl_cert": "cert.pem",
+  "ssl_key": "key.pem",
+  "users": {
+    "admin": {"password": "admin123", "read_only": false},
+    "guest": {"password": "guest123", "read_only": true}
+  }
+}
+```
+
+> 优先级：config.json < 命令行参数。例如 config.json 设了 `"port": 8080`，但命令行传了 `--port 9000`，则最终使用 9000。
+
+### 方式三：修改文件（永久生效）
 
 所有配置项在 `file_browser.py` 文件顶部，修改后重启生效：
 
@@ -273,7 +300,7 @@ CONTENT_SEARCH_MAX_RESULTS = 50        # 内容搜索最大结果数
 | 场景 | 风险 | 说明 |
 |------|------|------|
 | 家庭 WiFi | 低 | 仅同网段设备可访问，密码保护 |
-| 公共 WiFi | 中高 | HTTP 明文传输，可被抓包 |
+| 公共 WiFi | 中高 | 默认 HTTP 明文传输，可被抓包；建议启用 HTTPS（`--ssl-cert` / `--ssl-key`） |
 | 暴露到公网 | **极高** | **强烈不建议**，即使有密码也不安全 |
 
 ### 安全机制
@@ -285,13 +312,19 @@ CONTENT_SEARCH_MAX_RESULTS = 50        # 内容搜索最大结果数
 - 系统关键目录保护（`C:\Windows`、`/usr`、`/etc` 等禁止删除）
 - ZIP 解压 Zip Slip 防护（`os.path.realpath` 校验）
 - 分享链接自动过期清理
+- 前端预览内容 XSS 净化（DOMPurify），Markdown/DOCX/XLSX/Mermaid 渲染均经过消毒
+- Mermaid 图表渲染使用 strict 安全级别
+- 正则搜索 ReDoS 防护（危险嵌套量词模式检测）
+- 安全响应头（`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`、`Content-Security-Policy`）
+- CSRF 防护：所有 POST 请求通过 `X-Requested-With` 自定义请求头校验，阻止跨站请求伪造
 
 ### 最佳实践
 
 1. 用完即关（`Ctrl+C`）
 2. 公网访问时务必配置 `ALLOWED_ROOTS` 白名单 + 强密码（详见 [公网访问指南](docs/GUIDE.md#公网访问外网穿透)）
-3. 在可信网络下使用
-4. 定期查看 `access.log`
+3. 如需在不可信网络下使用，建议通过 `--ssl-cert` 和 `--ssl-key` 启用 HTTPS 加密传输
+4. 在可信网络下使用
+5. 定期查看 `access.log`
 
 ---
 
@@ -307,7 +340,7 @@ New-NetFirewallRule -DisplayName "File Browser" -Direction Inbound -Protocol TCP
 
 **Q: 端口被占用？** 修改 `PORT = 9000` 改用其他端口。
 
-**Q: Markdown 渲染失败？** 需要网络访问 `cdn.jsdelivr.net`。离线环境会回退为纯文本。
+**Q: Markdown 渲染失败？** 所有前端库已内置，无需联网。如遇渲染异常，请确保使用最新版本。
 
 **Q: 删除的文件能恢复吗？** 不能，不经过回收站，永久删除。
 
@@ -321,27 +354,32 @@ New-NetFirewallRule -DisplayName "File Browser" -Direction Inbound -Protocol TCP
 
 ```
 lan-file-browser/
-├── file_browser.py      # 主程序（后端 + 前端，单文件）
-├── stop_server.bat      # 停止脚本 (Windows)
-├── stop_server.sh       # 停止脚本 (macOS/Linux)
-├── requirements.txt     # 依赖列表
-├── LICENSE              # MIT 协议
-├── README.md            # 中文文档（快速上手）
-├── README_EN.md         # English documentation (Quick Start)
-├── CHANGELOG.md         # 版本变更日志
-├── CONTRIBUTING.md      # 贡献指南
-├── SECURITY.md          # 安全策略
-├── CODE_OF_CONDUCT.md   # 行为准则
+├── file_browser.py        # 主程序（后端 + 前端，单文件）
+├── stop_server.bat        # 停止脚本 (Windows)
+├── stop_server.sh         # 停止脚本 (macOS/Linux)
+├── requirements.txt       # 运行依赖列表
+├── requirements-dev.txt   # 开发/测试依赖列表
+├── LICENSE                # MIT 协议
+├── THIRD_PARTY_LICENSES   # 第三方库许可证声明
+├── README.md              # 中文文档（快速上手）
+├── README_EN.md           # English documentation (Quick Start)
+├── CHANGELOG.md           # 版本变更日志
+├── CONTRIBUTING.md        # 贡献指南
+├── SECURITY.md            # 安全策略
+├── CODE_OF_CONDUCT.md     # 行为准则
 ├── docs/
-│   ├── GUIDE.md         # 详细功能使用指南
-│   ├── GUIDE_EN.md      # Detailed feature guide (English)
-│   ├── API.md           # API 接口文档
-│   ├── API_EN.md        # API documentation (English)
-│   ├── BEGINNER.md      # 零基础安装教程
-│   └── BEGINNER_EN.md   # Beginner tutorial (English)
-├── .github/             # CI/CD 配置、Issue/PR 模板
-├── bookmarks.json       # [运行后生成] 收藏夹数据
-└── access.log           # [运行后生成] 访问日志
+│   ├── GUIDE.md           # 详细功能使用指南
+│   ├── GUIDE_EN.md        # Detailed feature guide (English)
+│   ├── API.md             # API 接口文档
+│   ├── API_EN.md          # API documentation (English)
+│   ├── BEGINNER.md        # 零基础安装教程
+│   └── BEGINNER_EN.md     # Beginner tutorial (English)
+├── static/vendor/         # 前端依赖库（离线可用，已内置）
+│   └── VERSIONS.txt       # 各库版本号记录
+├── tests/                 # 自动化测试
+├── .github/               # CI/CD 配置、Issue/PR 模板
+├── bookmarks.json         # [运行后生成] 收藏夹数据
+└── access.log             # [运行后生成] 访问日志（自动轮转，10MB/5 份）
 ```
 
 > 详细的功能使用说明见 [docs/GUIDE.md](docs/GUIDE.md)，API 接口文档见 [docs/API.md](docs/API.md)。

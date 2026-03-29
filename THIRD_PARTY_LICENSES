@@ -1,0 +1,57 @@
+Third-Party Licenses
+====================
+
+This project bundles the following third-party libraries in static/vendor/.
+Each library retains its original license as noted below.
+
+
+1. highlight.js
+   Version: 11.11.1
+   License: BSD-3-Clause
+   Copyright: (c) 2006-2024 Josh Goebel and other contributors
+   Homepage: https://highlightjs.org/
+   Full license: https://github.com/highlightjs/highlight.js/blob/main/LICENSE
+
+2. github-dark.min.css (highlight.js theme)
+   License: MIT
+   Based on: https://github.com/primer/github-syntax-dark
+   Full license: https://github.com/primer/github-syntax-dark/blob/master/LICENSE
+
+3. marked.js
+   Version: 17.0.5
+   License: MIT
+   Copyright: (c) 2018-2026 MarkedJS; (c) 2011-2018 Christopher Jeffrey
+   Homepage: https://github.com/markedjs/marked
+   Full license: https://github.com/markedjs/marked/blob/master/LICENSE.md
+
+4. mermaid.js
+   License: MIT
+   Copyright: (c) Knut Sveidqvist and other contributors
+   Homepage: https://github.com/mermaid-js/mermaid
+   Full license: https://github.com/mermaid-js/mermaid/blob/develop/LICENSE
+
+5. mammoth.js
+   License: BSD-2-Clause
+   Copyright: (c) Michael Williamson
+   Homepage: https://github.com/mwilliamson/mammoth.js
+   Full license: https://github.com/mwilliamson/mammoth.js/blob/master/LICENSE
+
+6. xlsx.js (SheetJS Community Edition)
+   Version: 0.18.5
+   License: Apache-2.0
+   Copyright: (c) SheetJS LLC
+   Homepage: https://github.com/SheetJS/sheetjs
+   Full license: https://github.com/SheetJS/sheetjs/blob/master/LICENSE
+
+7. qrcode.js
+   License: MIT
+   Copyright: (c) davidshimjs
+   Homepage: https://github.com/davidshimjs/qrcodejs
+   Full license: https://github.com/davidshimjs/qrcodejs/blob/master/LICENSE
+
+8. DOMPurify
+   Version: 3.2.4
+   License: Apache-2.0 / MPL-2.0
+   Copyright: (c) Cure53 and other contributors
+   Homepage: https://github.com/cure53/DOMPurify
+   Full license: https://github.com/cure53/DOMPurify/blob/main/LICENSE

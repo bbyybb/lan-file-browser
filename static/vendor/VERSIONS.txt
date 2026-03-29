@@ -1,0 +1,15 @@
+Vendor Library Versions
+=======================
+This file records the versions of third-party libraries bundled in this directory.
+Please update this file when upgrading any library.
+
+Library                      | Version   | License       | Homepage
+-----------------------------|-----------|---------------|--------------------------------------------
+DOMPurify                    | 3.2.4     | Apache-2.0    | https://github.com/cure53/DOMPurify
+highlight.js                 | 11.11.1   | BSD-3-Clause  | https://highlightjs.org/
+github-dark.min.css          | -         | MIT           | https://github.com/primer/github-syntax-dark
+marked.js                    | 17.0.5    | MIT           | https://github.com/markedjs/marked
+mermaid.js                   | (bundled) | MIT           | https://github.com/mermaid-js/mermaid
+mammoth.js                   | 1.0.x     | BSD-2-Clause  | https://github.com/mwilliamson/mammoth.js
+xlsx.js (SheetJS)            | 0.18.5    | Apache-2.0    | https://github.com/SheetJS/sheetjs
+qrcode.js                    | (bundled) | MIT           | https://github.com/davidshimjs/qrcodejs

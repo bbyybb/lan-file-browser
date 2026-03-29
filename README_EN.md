@@ -119,7 +119,7 @@ After successful startup, the terminal shows:
 
 ```
 ======================================================
-  [File Browser v2.1] started
+  [File Browser v2.1.2] started
 ======================================================
   Local:    http://localhost:25600
   Phone:    http://192.168.1.100:25600
@@ -138,11 +138,11 @@ After successful startup, the terminal shows:
 | Disk Browsing | Windows auto-detects C:\, D:\, etc.; macOS/Linux starts from `/` |
 | Breadcrumb Navigation | Top path bar, click any level to jump |
 | Sort & Filter | Sort by name/size/creation time/modification time, filter by file type or extension |
-| Directory Bookmarks | Add frequently used directories to bookmarks for quick access |
+| Directory Bookmarks | Add frequently used directories to bookmarks for quick access; isolated per user in multi-user mode |
 | Remember Location | Auto-returns to last browsed directory (per device) |
 | **File Copy** | Visual directory picker to choose target, auto-adds `_copy` suffix for duplicates |
 | **File Move** | Visual directory picker to choose target, supports browse navigation |
-| Upload Files | Click upload button or **drag & drop files onto the page** |
+| Upload Files | Click upload button or **drag & drop files onto the page**, with upload progress bar |
 | Create File/Folder | Create in current directory, supports initial content input |
 | Rename / Delete | Rename with conflict detection; deleting non-empty folders requires confirmation then **recursive deletion** |
 
@@ -167,8 +167,8 @@ After successful startup, the terminal shows:
 | Batch Zip Download | Select multiple files and download as zip |
 | **Batch Operations** | Multi-select for batch delete, move, copy, with select-all support |
 | **Folder Download** | Click folder download button, recursively packaged as zip |
-| **Temporary Share Links** | Click "Share" in preview modal, generates a 1-hour public download link, no login required |
-| Shared Clipboard | Quickly transfer text between phone and computer |
+| **Temporary Share Links** | Click "Share" in preview modal, choose expiration (5 min ~ 24 hours), generates a public download link, no login required |
+| Shared Clipboard | Quickly transfer text between phone and computer; isolated per user in multi-user mode |
 
 ### Search
 
@@ -186,7 +186,7 @@ After successful startup, the terminal shows:
 | **Grid / List View** | Grid mode auto-displays image thumbnails |
 | **Chinese / English Toggle** | One-click language switch in toolbar |
 | Mobile Optimized | Touch-friendly, optimized for mobile devices |
-| Password Protection | Auto-generates 32-char strong password each startup, supports custom or disable |
+| Password Protection | Auto-generates 32-char strong password each startup, supports custom or disable; logout available after login |
 | **Multi-User Multi-Password** | Admin password (full access) + read-only password (browse and download only), ideal for teachers/teams |
 | **Directory Whitelist** | Configure `ALLOWED_ROOTS` to restrict access to specified directories only |
 | QR Code | Login page auto-displays access URL QR code for quick phone scanning |
@@ -200,7 +200,7 @@ After successful startup, the terminal shows:
 | Item | Requirement |
 |------|-------------|
 | Python | 3.8+ |
-| Dependencies | Flask (`pip install flask`, only dependency) |
+| Dependencies | Flask 2.0+ (`pip install flask`, only runtime dependency) |
 | Network | Computer and phone on the same LAN |
 | Browser | Chrome (recommended), Safari, Firefox, Edge |
 | OS | Windows 10/11, macOS 10.15+, Linux |
@@ -221,7 +221,7 @@ After successful startup, the terminal shows:
 
 ## Configuration
 
-There are two ways to configure parameters. **Command-line arguments take priority over file configuration**:
+There are three ways to configure parameters. **Priority: CLI arguments > config.json > file defaults**:
 
 ### Method 1: Command-Line Arguments (temporary, doesn't modify files)
 
@@ -235,11 +235,38 @@ There are two ways to configure parameters. **Command-line arguments take priori
 | `--no-sleep` | Don't prevent system sleep | `--no-sleep` |
 | `--allow-sleep` | Same as `--no-sleep` | `--allow-sleep` |
 | `--lang` | UI language (terminal + browser) | `--lang en` |
+| `--ssl-cert` | SSL certificate file path (enables HTTPS) | `--ssl-cert cert.pem` |
+| `--ssl-key` | SSL private key file path (enables HTTPS) | `--ssl-key key.pem` |
 | `-y` | Skip interactive wizard | `-y` |
 
 > When command-line arguments are provided, the interactive wizard is auto-skipped; without arguments, the wizard starts.
 
-### Method 2: Modify File (persistent)
+### Method 2: config.json Configuration File (persistent, recommended)
+
+Create a `config.json` file in DATA_DIR (the directory containing the exe or script). It is loaded automatically at startup. CLI arguments override config.json values with the same name.
+
+Supported fields: `port`, `password`, `roots`, `read_only`, `prevent_sleep`, `lang`, `users`, `ssl_cert`, `ssl_key`
+
+```json
+{
+  "port": 8080,
+  "password": "my-secret",
+  "roots": ["D:/shared", "E:/docs"],
+  "read_only": false,
+  "prevent_sleep": true,
+  "lang": "en",
+  "ssl_cert": "cert.pem",
+  "ssl_key": "key.pem",
+  "users": {
+    "admin": {"password": "admin123", "read_only": false},
+    "guest": {"password": "guest123", "read_only": true}
+  }
+}
+```
+
+> Priority: config.json < CLI arguments. For example, if config.json sets `"port": 8080` but you pass `--port 9000` on the command line, port 9000 is used.
+
+### Method 3: Modify File (persistent)
 
 All configuration options are at the top of `file_browser.py`, restart to apply:
 
@@ -273,7 +300,7 @@ CONTENT_SEARCH_MAX_RESULTS = 50        # Content search max results
 | Scenario | Risk | Notes |
 |----------|------|-------|
 | Home WiFi | Low | Only same-subnet devices can access, password protected |
-| Public WiFi | Medium-High | HTTP plaintext transmission, can be sniffed |
+| Public WiFi | Medium-High | Default HTTP plaintext transmission, can be sniffed; consider enabling HTTPS (`--ssl-cert` / `--ssl-key`) |
 | Exposed to Internet | **Very High** | **Strongly discouraged**, even with password it's not secure |
 
 ### Security Mechanisms
@@ -285,13 +312,19 @@ CONTENT_SEARCH_MAX_RESULTS = 50        # Content search max results
 - System critical directory protection (`C:\Windows`, `/usr`, `/etc`, etc. cannot be deleted)
 - ZIP extraction Zip Slip protection (`os.path.realpath` validation)
 - Share links auto-expire and clean up
+- Frontend preview XSS sanitization (DOMPurify) for Markdown/DOCX/XLSX/Mermaid rendering
+- Mermaid diagram rendering uses strict security level
+- Regex search ReDoS protection (dangerous nested quantifier pattern detection)
+- Security response headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Content-Security-Policy`)
+- CSRF protection: All POST requests validated via `X-Requested-With` custom header, preventing cross-site request forgery
 
 ### Best Practices
 
 1. Stop when done (`Ctrl+C`)
 2. For public access, always configure `ALLOWED_ROOTS` whitelist + strong password (see [Public Access Guide](docs/GUIDE_EN.md#public-access-tunneling))
-3. Use on trusted networks
-4. Regularly check `access.log`
+3. For untrusted networks, enable HTTPS via `--ssl-cert` and `--ssl-key` for encrypted transmission
+4. Use on trusted networks
+5. Regularly check `access.log`
 
 ---
 
@@ -307,7 +340,7 @@ New-NetFirewallRule -DisplayName "File Browser" -Direction Inbound -Protocol TCP
 
 **Q: Port is occupied?** Change `PORT = 9000` to use a different port.
 
-**Q: Markdown rendering failed?** Requires network access to `cdn.jsdelivr.net`. Falls back to plain text in offline environments.
+**Q: Markdown rendering failed?** All frontend libraries are bundled locally, no internet required. If rendering fails, please ensure you are using the latest version.
 
 **Q: Can deleted files be recovered?** No, they bypass the recycle bin and are permanently deleted.
 
@@ -321,27 +354,32 @@ New-NetFirewallRule -DisplayName "File Browser" -Direction Inbound -Protocol TCP
 
 ```
 lan-file-browser/
-├── file_browser.py      # Main program (backend + frontend, single file)
-├── stop_server.bat      # Stop script (Windows)
-├── stop_server.sh       # Stop script (macOS/Linux)
-├── requirements.txt     # Dependency list
-├── LICENSE              # MIT License
-├── README.md            # Chinese documentation (quick start)
-├── README_EN.md         # English documentation (this file)
-├── CHANGELOG.md         # Version changelog
-├── CONTRIBUTING.md      # Contributing guide
-├── SECURITY.md          # Security policy
-├── CODE_OF_CONDUCT.md   # Code of conduct
+├── file_browser.py        # Main program (backend + frontend, single file)
+├── stop_server.bat        # Stop script (Windows)
+├── stop_server.sh         # Stop script (macOS/Linux)
+├── requirements.txt       # Runtime dependency list
+├── requirements-dev.txt   # Development/test dependency list
+├── LICENSE                # MIT License
+├── THIRD_PARTY_LICENSES   # Third-party library license notices
+├── README.md              # Chinese documentation (quick start)
+├── README_EN.md           # English documentation (this file)
+├── CHANGELOG.md           # Version changelog
+├── CONTRIBUTING.md        # Contributing guide
+├── SECURITY.md            # Security policy
+├── CODE_OF_CONDUCT.md     # Code of conduct
 ├── docs/
-│   ├── GUIDE.md         # Detailed feature guide (Chinese)
-│   ├── GUIDE_EN.md      # Detailed feature guide (English)
-│   ├── API.md           # API documentation (Chinese)
-│   ├── API_EN.md        # API documentation (English)
-│   ├── BEGINNER.md      # Beginner tutorial (Chinese)
-│   └── BEGINNER_EN.md   # Beginner tutorial (English)
-├── .github/             # CI/CD config, Issue/PR templates
-├── bookmarks.json       # [Generated at runtime] Bookmark data
-└── access.log           # [Generated at runtime] Access log
+│   ├── GUIDE.md           # Detailed feature guide (Chinese)
+│   ├── GUIDE_EN.md        # Detailed feature guide (English)
+│   ├── API.md             # API documentation (Chinese)
+│   ├── API_EN.md          # API documentation (English)
+│   ├── BEGINNER.md        # Beginner tutorial (Chinese)
+│   └── BEGINNER_EN.md     # Beginner tutorial (English)
+├── static/vendor/         # Frontend libraries (bundled for offline use)
+│   └── VERSIONS.txt       # Library version records
+├── tests/                 # Automated tests
+├── .github/               # CI/CD config, Issue/PR templates
+├── bookmarks.json         # [Generated at runtime] Bookmark data
+└── access.log             # [Generated at runtime] Access log (auto-rotated, 10MB/5 backups)
 ```
 
 > For detailed feature guide see [docs/GUIDE_EN.md](docs/GUIDE_EN.md), API documentation see [docs/API_EN.md](docs/API_EN.md).

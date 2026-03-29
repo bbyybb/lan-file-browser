@@ -38,7 +38,9 @@
 - [Light / Dark Theme](#light--dark-theme)
 - [Grid / List View](#grid--list-view)
 - [Language Toggle](#language-toggle)
+- [Logout](#logout)
 - [Prevent System Sleep](#prevent-system-sleep)
+- [HTTPS Configuration](#https-configuration)
 - [Public Access (Tunneling)](#public-access-tunneling)
 - [Access Log](#access-log)
 - [Supported File Types](#supported-file-types)
@@ -106,6 +108,25 @@ Edit the top of `file_browser.py`:
 ```python
 ALLOWED_ROOTS = ["D:/shared-files", "E:/projects"]
 ```
+
+**Method 3: config.json configuration file**
+
+Create a `config.json` file in the same directory as the program to centrally manage all settings:
+
+```json
+{
+  "port": 8080,
+  "password": "mypass",
+  "roots": ["D:/shared"],
+  "read_only": false,
+  "prevent_sleep": true,
+  "lang": "zh",
+  "ssl_cert": "/path/to/cert.pem",
+  "ssl_key": "/path/to/key.pem"
+}
+```
+
+> Priority: `config.json` < command-line arguments. Command-line arguments override the corresponding settings in `config.json`.
 
 Effects after configuration:
 - Home page only shows whitelisted directories (replaces the original drive list)
@@ -296,11 +317,11 @@ Click an Office file to open the preview modal:
 
 | Format | Preview Method | Technology |
 |--------|----------------|------------|
-| `.docx` | Rendered as formatted HTML document | mammoth.js (CDN) |
-| `.xlsx` `.xls` | Rendered as HTML tables, multiple sheets displayed | SheetJS (CDN) |
+| `.docx` | Rendered as formatted HTML document | mammoth.js (bundled) |
+| `.xlsx` `.xls` | Rendered as HTML tables, multiple sheets displayed | SheetJS (bundled) |
 | `.pptx` etc. | Preview not yet supported, download button provided | - |
 
-> Office preview requires network access to `cdn.jsdelivr.net` for JS libraries. In offline environments, falls back to "preview not supported".
+> All frontend libraries are bundled with the program. Office preview works offline without internet access.
 
 ---
 
@@ -367,6 +388,7 @@ Click the **⬇** button next to a folder, and the entire folder is recursively 
 **Method 2: Drag and drop**
 Drag files from your desktop or file manager **directly onto the browser page** and release to upload.
 
+- A **real-time progress bar** is displayed during upload (percentage + uploaded/total size); drag-and-drop uploads show a floating progress bar at the bottom
 - No file size limit
 - Same-name files auto-get numeric suffix, won't overwrite
 
@@ -423,9 +445,10 @@ Click the **🗑** button → confirmation dialog → delete.
 ## Temporary Share Links
 
 1. While previewing any file, click the **"🔗 Share"** button at the top of the modal
-2. A temporary link is auto-generated (valid for 1 hour)
-3. Click "Copy Link" to send to others
-4. Recipients can download directly by opening the link — **no login required**
+2. Select the link expiration from the dropdown (5 minutes / 30 minutes / 1 hour / 6 hours / 12 hours / 24 hours)
+3. Click "Create Share Link"
+4. Click "Copy Link" to send to others
+5. Recipients can download directly by opening the link — **no login required**
 
 > Links auto-expire after the set time, returning 410 Gone.
 
@@ -437,6 +460,8 @@ Click **"📋 Clipboard"** in the toolbar → enter text → save. Open clipboar
 
 Use case: Transfer URLs, passwords, code snippets, and other text between phone and computer.
 
+> In multi-user mode, clipboard data is isolated per user — each user can only read and write their own clipboard content.
+
 ---
 
 ## Directory Bookmarks
@@ -446,6 +471,8 @@ Use case: Transfer URLs, passwords, code snippets, and other text between phone 
 - **Remove**: Click ✕ in the bookmark list
 
 Bookmark data is persistently saved in `bookmarks.json`, survives restarts.
+
+> In multi-user mode, bookmarks are stored independently per user — different users' bookmarks do not interfere with each other.
 
 ---
 
@@ -494,6 +521,15 @@ Click the **中 / EN** button in the toolbar to switch interface language. Prefe
 
 ---
 
+## Logout
+
+When password protection is enabled, a **"🚪 Logout"** button appears in the top-right corner of the page. Click to log out and return to the login page.
+
+- Logout clears the authentication cookie in the browser
+- In multi-user mode, logout also clears the server-side session record
+
+---
+
 ## Prevent System Sleep
 
 While the service is running, the program prevents the computer from entering sleep/hibernate by default, ensuring phones and other devices can access continuously.
@@ -514,6 +550,31 @@ While the service is running, the program prevents the computer from entering sl
 **To disable this feature:**
 - Command line: `python file_browser.py --no-sleep`
 - Or modify file: `PREVENT_SLEEP = False`
+
+---
+
+## HTTPS Configuration
+
+Enable HTTPS encrypted access by providing SSL certificate and private key files.
+
+**Method 1: Command-line arguments**
+
+```bash
+python file_browser.py --ssl-cert /path/to/cert.pem --ssl-key /path/to/key.pem
+```
+
+**Method 2: config.json configuration file**
+
+```json
+{
+  "ssl_cert": "/path/to/cert.pem",
+  "ssl_key": "/path/to/key.pem"
+}
+```
+
+Once enabled, the service will be accessible via `https://`, and the terminal will display the HTTPS address.
+
+> Self-signed certificates will cause browser security warnings. You can obtain free trusted certificates from services like Let's Encrypt.
 
 ---
 
@@ -601,7 +662,7 @@ The terminal will output a `https://xxxx.localhost.run` URL.
 
 ## Access Log
 
-All operations are auto-logged to `access.log` and simultaneously printed to the terminal:
+All operations are auto-logged to `access.log` and simultaneously printed to the terminal. Log files are auto-rotated: max 10MB per file, keeping the 5 most recent backups (`access.log.1` ~ `access.log.5`):
 
 ```
 2026-03-05 14:30:00 | 192.168.1.50 | LOGIN | success
@@ -621,21 +682,21 @@ Logged operation types: LOGIN, BROWSE, PREVIEW, RAW, SEARCH, CONTENT_SEARCH, DOW
 
 | Type | Extensions |
 |------|------------|
-| Images | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.svg` `.ico` |
-| Video | `.mp4` `.webm` `.mkv` `.avi` `.mov` `.flv` `.wmv` |
-| Audio | `.mp3` `.wav` `.ogg` `.flac` `.aac` `.wma` `.m4a` |
+| Images | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.svg` `.ico` `.tiff` `.tif` |
+| Video | `.mp4` `.webm` `.mkv` `.avi` `.mov` `.flv` `.wmv` `.m4v` `.3gp` |
+| Audio | `.mp3` `.wav` `.ogg` `.flac` `.aac` `.wma` `.m4a` `.opus` |
 | Markdown | `.md` `.markdown` `.mdown` `.mkd` |
 | PDF | `.pdf` |
 | Office | `.docx` (rendered as HTML) `.xlsx` `.xls` (rendered as tables) |
 | Archives | `.zip` (view content list + extraction) |
-| Text/Code | `.txt` `.py` `.js` `.ts` `.jsx` `.tsx` `.html` `.css` `.json` `.xml` `.yaml` `.yml` `.toml` `.ini` `.cfg` `.conf` `.sh` `.bash` `.bat` `.cmd` `.ps1` `.java` `.c` `.cpp` `.h` `.hpp` `.cs` `.go` `.rs` `.rb` `.php` `.sql` `.r` `.swift` `.kt` `.scala` `.lua` `.pl` `.env` `.gitignore` `.dockerfile` `.vue` `.svelte` `.log` `.csv` `.tsv` |
+| Text/Code | `.txt` `.log` `.csv` `.tsv` `.nfo` `.text` `.py` `.pyw` `.pyi` `.js` `.mjs` `.cjs` `.ts` `.mts` `.cts` `.jsx` `.tsx` `.vue` `.svelte` `.astro` `.html` `.htm` `.css` `.scss` `.sass` `.less` `.json` `.jsonc` `.json5` `.xml` `.yaml` `.yml` `.toml` `.ini` `.cfg` `.conf` `.java` `.kt` `.kts` `.scala` `.groovy` `.gradle` `.c` `.h` `.cpp` `.hpp` `.cc` `.cxx` `.cs` `.fs` `.vb` `.go` `.rs` `.swift` `.dart` `.zig` `.nim` `.rb` `.php` `.pl` `.pm` `.lua` `.r` `.jl` `.sql` `.sh` `.bash` `.zsh` `.fish` `.bat` `.cmd` `.ps1` `.psm1` `.hs` `.ml` `.ex` `.exs` `.erl` `.clj` `.cljs` `.lisp` `.el` `.rkt` `.tcl` `.elm` `.purs` `.res` `.scm` `.sml` `.lean` `.raku` `.sol` `.vy` `.f90` `.pas` `.cob` `.ada` `.glsl` `.hlsl` `.wgsl` `.cu` `.ahk` `.nix` `.awk` `.coffee` `.mdx` `.erb` `.j2` `.jsp` `.mustache` `.tf` `.tfvars` `.hcl` `.graphql` `.proto` `.prisma` `.rst` `.adoc` `.tex` `.org` `.rmd` `.typ` `.srt` `.vtt` `.ass` `.lrc` `.m3u` `.m3u8` `.cue` `.ics` `.vcf` `.pem` `.crt` `.key` `.diff` `.patch` `.asm` `.dockerfile` `.spec` `.csproj` `.sln` and 160+ more |
 
 ### Download Only
 
 | Type | Extensions |
 |------|------------|
-| Archives | `.rar` `.7z` `.tar` `.gz` `.bz2` `.xz` |
-| Office | `.doc` `.docx` `.xls` `.xlsx` `.ppt` `.pptx` `.odt` `.ods` `.odp` |
+| Archives | `.rar` `.7z` `.tar` `.gz` `.bz2` `.xz` `.zst` `.tgz` |
+| Office | `.doc` `.ppt` `.pptx` `.odt` `.ods` `.odp` `.rtf` |
 | Fonts | `.ttf` `.otf` `.woff` `.woff2` |
 
 ---
@@ -650,10 +711,13 @@ Logged operation types: LOGIN, BROWSE, PREVIEW, RAW, SEARCH, CONTENT_SEARCH, DOW
 │  │  ├── marked.js       Markdown rendering    │  │
 │  │  ├── highlight.js    Code syntax highlight  │  │
 │  │  ├── mermaid.js      Diagram rendering     │  │
-│  │  └── qrcode.js       QR code generation    │  │
+│  │  ├── DOMPurify       XSS sanitization      │  │
+│  │  ├── qrcode.js       QR code generation    │  │
+│  │  ├── mammoth.js      Word document preview │  │
+│  │  └── SheetJS          Excel preview         │  │
 │  └─────────────────────┬──────────────────────┘  │
 └────────────────────────┼─────────────────────────┘
-                         │ HTTP + Cookie Auth
+                         │ HTTP/HTTPS + Cookie Auth
 ┌────────────────────────┼─────────────────────────┐
 │       Python Flask Server (0.0.0.0:25600)         │
 │  ┌─────────────────────┴──────────────────────┐  │
@@ -676,4 +740,4 @@ Logged operation types: LOGIN, BROWSE, PREVIEW, RAW, SEARCH, CONTENT_SEARCH, DOW
 
 **Design philosophy**: Single-file deployment, zero-config startup, minimal dependencies, fully cross-platform.
 
-> For detailed API documentation, see [API.md](API_EN.md).
+> For detailed API documentation, see [API Documentation](API_EN.md).

@@ -6,10 +6,10 @@
 
 | 版本 | 支持状态 |
 |------|---------|
-| v2.1.1 (最新) | ✅ 支持 |
-| < v2.1.1 | ❌ 不再支持 |
+| 最新版本 | ✅ 支持 |
+| 旧版本 | ❌ 不再支持 |
 
-建议始终使用 [最新版本](https://github.com/bbyybb/lan-file-browser/releases/latest)。
+安全修复仅应用于最新版本。建议始终使用 [最新版本](https://github.com/bbyybb/lan-file-browser/releases/latest)。
 
 ## 报告安全漏洞
 
@@ -32,8 +32,12 @@
 
 本项目是一个**局域网文件浏览工具**，设计用于可信网络环境。请注意：
 
-- 使用 HTTP 明文传输，**不适合**暴露到公网
-- 密码通过 HTTP 明文传输，仅作为局域网内的基本访问控制
+- 默认使用 HTTP 明文传输，**不适合**暴露到公网；支持可选 HTTPS（通过 `--ssl-cert` / `--ssl-key` 参数启用）
+- 密码通过 HTTP 明文传输（除非启用 HTTPS），仅作为局域网内的基本访问控制
+- 前端预览内容经过 DOMPurify XSS 净化，Mermaid 使用 strict 安全级别；错误消息通过 `eh()` 函数进行 HTML 转义防止 XSS
+- 所有响应包含安全头（`Content-Security-Policy`、`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`）
+- 正则搜索具有 ReDoS 危险模式检测
+- POST 请求通过 `X-Requested-With` 自定义请求头校验防御 CSRF 攻击（登录接口豁免）
 - 详细的安全机制和最佳实践请参见 [README 安全说明](README.md#安全说明)
 
 ---
@@ -46,10 +50,10 @@
 
 | Version | Status |
 |---------|--------|
-| v2.1.1 (latest) | ✅ Supported |
-| < v2.1.1 | ❌ No longer supported |
+| Latest | ✅ Supported |
+| Older versions | ❌ No longer supported |
 
-Always use the [latest version](https://github.com/bbyybb/lan-file-browser/releases/latest).
+Security fixes are only applied to the latest version. Always use the [latest version](https://github.com/bbyybb/lan-file-browser/releases/latest).
 
 ## Reporting a Vulnerability
 
@@ -72,6 +76,10 @@ I will respond and address the report as soon as possible.
 
 This project is a **LAN file browsing tool** designed for trusted network environments. Please note:
 
-- Uses HTTP plaintext transmission, **not suitable** for public internet exposure
-- Passwords are transmitted in plaintext over HTTP, serving only as basic access control within LAN
+- Uses HTTP plaintext transmission by default, **not suitable** for public internet exposure; optional HTTPS supported (via `--ssl-cert` / `--ssl-key` flags)
+- Passwords are transmitted in plaintext over HTTP (unless HTTPS is enabled), serving only as basic access control within LAN
+- Frontend preview content is sanitized with DOMPurify; Mermaid uses strict security level; error messages are HTML-escaped via `eh()` function to prevent XSS
+- All responses include security headers (`Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`)
+- Regex search includes ReDoS dangerous pattern detection
+- POST requests are protected against CSRF via `X-Requested-With` custom header validation (login endpoint is exempt)
 - For detailed security mechanisms and best practices, see [README Security Section](README_EN.md#security)

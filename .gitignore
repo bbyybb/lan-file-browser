@@ -7,17 +7,21 @@ PUBLISH.md
 PUBLISH_EN.md
 PROMOTION.md
 PROMOTION_EN.md
+PROMOTION_CHANNELS.md
+GIT_COMMIT.md
 seal.py
 build.py
-PROMOTION_CHANNELS.md
 
 # PyInstaller 打包产物
 dist/
 build/
 *.spec
+!file_browser.spec
+!FileBrowser.spec
 
 # 构建脚本（仅维护者本地使用，不公开）
 scripts/
+!scripts/build-release.sh
 
 # 编辑文件时自动创建的备份
 *.bak
@@ -25,6 +29,16 @@ scripts/
 # Python 字节码缓存
 __pycache__/
 *.py[cod]
+*.egg-info/
+
+# 测试 / 覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 环境变量（安全最佳实践）
+.env
+.env.*
 
 # 虚拟环境
 venv/
@@ -42,5 +56,6 @@ Thumbs.db
 
 # IDE
 .idea
+.vscode
 
 .fastRequest

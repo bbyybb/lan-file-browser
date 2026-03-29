@@ -109,12 +109,19 @@ git push origin v2.x.x    # 触发 CI 自动构建和发布
 git clone https://github.com/bbyybb/lan-file-browser.git
 cd lan-file-browser
 
-# 安装依赖
-pip install flask
+# 安装依赖（含测试工具和 PyInstaller 构建工具）
+pip install -r requirements-dev.txt
 
 # 启动开发
 python file_browser.py
+
+# 运行自动化测试（提交前请确保全部通过）
+pytest tests/ -v
 ```
+
+> 开发依赖包含：Flask（运行时）、pytest（测试）、PyInstaller（构建可执行文件）。
+> 测试文件按功能模块组织在 `tests/` 目录下，命名规范为 `test_*.py`。
+> **注意**：项目启用了 CSRF 保护，所有 POST 请求须携带 `X-Requested-With: XMLHttpRequest` 请求头。测试中已通过 `conftest.py` 中的 `CSRFClient` 自动处理。手动测试 API 时请确保附带此请求头。
 
 ## 许可证
 
@@ -233,12 +240,19 @@ git push origin v2.x.x    # triggers CI auto-build and release
 git clone https://github.com/bbyybb/lan-file-browser.git
 cd lan-file-browser
 
-# Install dependencies
-pip install flask
+# Install dependencies (including test tools and PyInstaller build tool)
+pip install -r requirements-dev.txt
 
 # Start development
 python file_browser.py
+
+# Run automated tests (please ensure all pass before submitting)
+pytest tests/ -v
 ```
+
+> Dev dependencies include: Flask (runtime), pytest (testing), PyInstaller (building executables).
+> Test files are organized by feature module in the `tests/` directory, following the `test_*.py` naming convention.
+> **Note**: The project has CSRF protection enabled. All POST requests must include the `X-Requested-With: XMLHttpRequest` header. Tests handle this automatically via `CSRFClient` in `conftest.py`. When manually testing APIs, make sure to include this header.
 
 ## License
 
