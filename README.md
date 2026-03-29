@@ -153,7 +153,7 @@ python file_browser.py --help
 | 图片 / 视频 / 音频 | 内置播放器，支持 jpg/png/gif/mp4/mp3 等主流格式 |
 | **视频字幕** | 自动检测同目录下同名 .vtt/.srt/.ass 字幕文件并加载 |
 | PDF | 浏览器内嵌阅读器（手机端自动适配） |
-| Markdown | marked.js 渲染（GFM 语法 + Mermaid 图表），支持文档内链接跳转 |
+| Markdown | marked.js 渲染（GFM 语法 + Mermaid 图表），支持文档内链接跳转与返回导航 |
 | **Office 预览** | docx 渲染为 HTML，xlsx/xls 渲染为表格（mammoth.js + SheetJS） |
 | 代码/文本 | 40+ 种语言语法高亮 |
 | **ZIP 预览** | 点击 `.zip` 文件直接查看内容列表，一键**在线解压** |

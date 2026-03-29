@@ -296,7 +296,7 @@ Click a file to open the preview modal:
 | Video | mp4, webm (auto-loads same-name subtitles, other formats depend on browser) |
 | Audio | mp3, wav, ogg, flac, aac |
 | PDF | In-browser reader (mobile: "Open in Browser" button) |
-| Markdown | GFM rendering + Mermaid diagrams + in-document link navigation |
+| Markdown | GFM rendering + Mermaid diagrams + in-document link navigation + back navigation |
 | **Office** | docx rendered as HTML, xlsx/xls rendered as tables |
 | Code/Text | 40+ languages (py, js, ts, go, java, c, cpp, etc.) |
 | ZIP | View content list + online extraction (see below) |

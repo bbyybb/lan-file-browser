@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [v2.1.2] - 2026-03-30
 
 ### Added / 新增
+- Markdown 预览新增返回导航功能：点击文档内链接跳转后，可通过返回按钮逐级回退（支持多级历史栈） / Added back navigation for Markdown preview: clicking linked documents shows a back button with multi-level history stack
 - 登出功能：后端 `/api/logout` 接口 + 前端登出按钮（需认证时自动显示） / Logout feature: `/api/logout` endpoint + frontend logout button (auto-shown when auth is required)
 - CSRF 保护：所有 POST 请求通过 `X-Requested-With` 自定义 Header 校验，防御跨站请求伪造（`/api/login` 豁免） / CSRF protection via `X-Requested-With` custom header validation for all POST requests (login exempt)
 - 分享链接支持自定义过期时间：前端新增 6 档选择（5 分钟 / 30 分钟 / 1 小时 / 6 小时 / 12 小时 / 24 小时） / Share link custom expiration: 6 options (5m / 30m / 1h / 6h / 12h / 24h)
@@ -47,6 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - 测试用例总数从 212 增加到 237 / Total test cases increased from 212 to 237
 
 ### Fixed / 修复
+- 修复 Markdown 预览中内嵌链接包含中文（或其他非 ASCII 字符）路径时提示"文件不存在"的 bug（添加 `decodeURIComponent` 解码） / Fixed Markdown preview inline links with Chinese/non-ASCII paths returning "file not found" (added `decodeURIComponent` decoding)
 - 修复 `sanitizeHTML` 在 DOMPurify 不可用时直接返回原始 HTML 的 XSS 风险（改为 `eh()` 转义） / Fixed XSS risk in `sanitizeHTML` fallback when DOMPurify unavailable (now uses `eh()` escaping)
 - 修复前端文件详情中 `info.size`/`info.ext`/`info.type`/`info.modified` 未经 HTML 转义直接插入 `innerHTML` 的问题 / Fixed file detail info fields not HTML-escaped before innerHTML insertion
 - 修复 `esc()` 函数未转义反引号的问题（防止模板字符串注入） / Fixed `esc()` function not escaping backticks (prevents template literal injection)

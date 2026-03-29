@@ -267,7 +267,7 @@ _RES_MARKERS = ['\u767d\u767dLOVE\u5c39\u5c39', 'LFB-bbloveyy-2026',
 _RES_EXPECTED = 'c908d591dce0b0df'
 
 _SEAL_HASHES = {
-    "README.md": "7039efe8b8b23023c5b979296fd6d3f3c7b5c2214f3000b6430ca3d7437a5c5f",
+    "README.md": "3f3ac0be2291e5ff2b3aa9a86e35531274c0b2e2774f24b8d2862f6877b12a55",
     "docs/wechat_pay.jpg": "686b9d5bba59d6831580984cb93804543f346d943f2baf4a94216fd13438f1e6",
     "docs/alipay.jpg": "510155042b703d23f7eeabc04496097a7cc13772c5712c8d0716bab5962172dd",
     "docs/bmc_qr.png": "bfd20ef305007c3dacf30dde49ce8f0fe4d7ac3ffcc86ac1f83bc1e75cccfcd6",
@@ -2581,6 +2581,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     <div class="modal-header">
       <span class="modal-title" id="modalTitle"></span>
       <div class="modal-actions">
+        <button class="modal-btn modal-btn-close" id="modalBack" style="display:none" onclick="mdGoBack()" data-i18n="modalBack">&#x2190; 返回</button>
         <button class="modal-btn modal-btn-primary" id="modalEdit" style="display:none" onclick="toggleEdit()" data-i18n="modalEdit">&#x270f; 编辑</button>
         <button class="modal-btn modal-btn-primary" id="modalSave" style="display:none" onclick="saveFile()" data-i18n="modalSave">&#x1f4be; 保存</button>
         <button class="modal-btn modal-btn-close" id="modalCancelEdit" style="display:none" onclick="cancelEdit()" data-i18n="modalCancelEdit">取消编辑</button>
@@ -3205,6 +3206,7 @@ let currentPreviewPath="";    // 当前预览的文件路径
 let currentPreviewType="";    // 当前预览的文件类型
 let currentPreviewContent=""; // 原始文件内容（用于检测是否修改）
 let isEditing=false;          // 是否处于编辑模式
+let mdNavHistory=[];          // Markdown 文档导航历史栈 [{path, name, type}, ...]
 
 function previewFile(path,name,type){
     const modal=document.getElementById("modal");
@@ -3215,6 +3217,7 @@ function previewFile(path,name,type){
     // 重置编辑状态
     currentPreviewPath=path;currentPreviewType=type;currentPreviewContent="";isEditing=false;
     // 重置按钮显示
+    document.getElementById("modalBack").style.display=mdNavHistory.length>0?"":"none";
     document.getElementById("modalEdit").style.display="none";
     document.getElementById("modalSave").style.display="none";
     document.getElementById("modalCancelEdit").style.display="none";
@@ -3423,7 +3426,7 @@ function cancelEdit(){
     document.getElementById("modalCancelEdit").style.display="none";
 }
 
-function closeModal(){
+function closeModal(keepHistory){
     // 如果正在编辑且有未保存修改，提示确认
     if(isEditing){
         const area=document.getElementById("editorArea");
@@ -3432,9 +3435,11 @@ function closeModal(){
         }
     }
     isEditing=false;
+    if(!keepHistory) mdNavHistory=[];
     document.getElementById("modal").classList.remove("show");document.body.style.overflow="";
     const b=document.getElementById("modalBody");b.querySelectorAll("video,audio").forEach(el=>{el.pause();el.src=""});b.innerHTML="";
     document.getElementById("modalDetail").style.display="none";
+    document.getElementById("modalBack").style.display="none";
     document.getElementById("modalEdit").style.display="none";
     document.getElementById("modalSave").style.display="none";
     document.getElementById("modalCancelEdit").style.display="none";
@@ -3549,12 +3554,26 @@ function handleMdLinkClick(href, mdBody, currentFilePath){
 
     // 情况 2: 文件链接（如 docs/guide.md 或 other.md#section）
     if(filePart){
-        const fullPath = resolveRelativePath(currentFilePath, filePart);
-        const fileName = filePart.split("/").pop();
+        // marked.js 会对非 ASCII 字符（如中文）进行 URL 编码，需要先解码还原为原始路径
+        const decodedFilePart = decodeURIComponent(filePart);
+        const fullPath = resolveRelativePath(currentFilePath, decodedFilePart);
+        const fileName = decodedFilePart.split("/").pop();
         const fileType = getFileTypeFromName(fileName);
-        closeModal();
+        // 将当前文档压入导航历史栈，支持返回
+        mdNavHistory.push({path:currentFilePath, name:document.getElementById("modalTitle").textContent, type:currentPreviewType});
+        closeModal(true);
         setTimeout(() => previewFile(fullPath, fileName, fileType), 100);
     }
+}
+
+/**
+ * 返回上一个 Markdown 文档（从导航历史栈弹出）。
+ */
+function mdGoBack(){
+    if(mdNavHistory.length===0) return;
+    const prev=mdNavHistory.pop();
+    closeModal(true);
+    setTimeout(()=>previewFile(prev.path,prev.name,prev.type),100);
 }
 
 /**
@@ -3744,7 +3763,7 @@ const I18N={
         filterFont:"🔤 字体",filterOther:"📄 其他",filterExtPh:"后缀 如 .py,.md",filterClear:"清除筛选",
         statusReady:"就绪",dropHint:"📤 松开鼠标上传文件",breadcrumbRoot:"🏠 根",
         regexOff:"普通搜索（点击开启正则）",regexOn:"已启用正则搜索（点击关闭）",
-        modalEdit:"✏ 编辑",modalSave:"💾 保存",modalCancelEdit:"取消编辑",modalDownload:"下载",modalShare:"🔗 分享",modalClose:"关闭",
+        modalBack:"← 返回上级文档",modalEdit:"✏ 编辑",modalSave:"💾 保存",modalCancelEdit:"取消编辑",modalDownload:"下载",modalShare:"🔗 分享",modalClose:"关闭",
         actRename:"重命名",actDelete:"删除",actDownload:"下载",actCopy:"复制",actMove:"移动",actDownloadFolder:"下载文件夹",
         statusItems:" 项 — ",statusFiltered:"(已筛选)",statusDrives:"个磁盘",emptyFolder:"空文件夹",loadFail:"加载失败",createdPrefix:"创建:",
         selectFirst:"请先选择文件",packing:"正在打包...",packFail:"打包失败",dlStarted:"下载已开始",packDlFail:"打包下载失败",
@@ -3803,7 +3822,7 @@ const I18N={
         filterFont:"🔤 Fonts",filterOther:"📄 Other",filterExtPh:"Ext e.g. .py,.md",filterClear:"Clear filter",
         statusReady:"Ready",dropHint:"📤 Drop files to upload",breadcrumbRoot:"🏠 Root",
         regexOff:"Normal search (click to enable regex)",regexOn:"Regex enabled (click to disable)",
-        modalEdit:"✏ Edit",modalSave:"💾 Save",modalCancelEdit:"Cancel",modalDownload:"Download",modalShare:"🔗 Share",modalClose:"Close",
+        modalBack:"← Back",modalEdit:"✏ Edit",modalSave:"💾 Save",modalCancelEdit:"Cancel",modalDownload:"Download",modalShare:"🔗 Share",modalClose:"Close",
         actRename:"Rename",actDelete:"Delete",actDownload:"Download",actCopy:"Copy",actMove:"Move",actDownloadFolder:"Download folder",
         statusItems:" items — ",statusFiltered:"(filtered)",statusDrives:" drive(s)",emptyFolder:"Empty folder",loadFail:"Failed to load",createdPrefix:"Created:",
         selectFirst:"Select files first",packing:"Packing...",packFail:"Pack failed",dlStarted:"Download started",packDlFail:"Batch download failed",

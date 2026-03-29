@@ -88,6 +88,9 @@ def chinese_temp_dir(tmp_path):
     os.makedirs(os.path.join(d, "中文目录"))
     with open(os.path.join(d, "中文目录", "子文件.txt"), "w", encoding="utf-8") as f:
         f.write("子目录中的文件内容\n搜索关键词在这里\n")
+    # 中文 Markdown 文件
+    with open(os.path.join(d, "说明文档.md"), "w", encoding="utf-8") as f:
+        f.write("# 测试标题\n\n这是一个中文 Markdown 文件\n\n[链接](中文目录/子文件.txt)\n")
     # 纯英文文件（对照组）
     with open(os.path.join(d, "english.txt"), "w", encoding="utf-8") as f:
         f.write("Plain English content\n")
@@ -267,6 +270,15 @@ class TestChinesePreview:
         assert r.status_code == 200
         data = r.get_json()
         assert "中文文件" in data["content"]
+
+    def test_preview_chinese_markdown_file(self, chinese_client, chinese_temp_dir):
+        """测试中文路径下的 Markdown 文件预览。"""
+        fpath = os.path.join(chinese_temp_dir, "说明文档.md").replace("\\", "/")
+        r = chinese_client.get(f"/api/file?path={fpath}")
+        assert r.status_code == 200
+        data = r.get_json()
+        assert "测试标题" in data["content"]
+        assert data["ext"] == "md"
 
     def test_preview_gbk_chinese_file(self, chinese_client, chinese_temp_dir):
         fpath = os.path.join(chinese_temp_dir, "测试文档.txt").replace("\\", "/")

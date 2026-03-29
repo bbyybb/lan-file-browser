@@ -153,7 +153,7 @@ After successful startup, the terminal shows:
 | Image / Video / Audio | Built-in player, supports jpg/png/gif/mp4/mp3 and other major formats |
 | **Video Subtitles** | Auto-detects same-name .vtt/.srt/.ass subtitle files in the same directory |
 | PDF | In-browser reader (mobile-adapted) |
-| Markdown | marked.js rendering (GFM syntax + Mermaid diagrams), supports in-document link navigation |
+| Markdown | marked.js rendering (GFM syntax + Mermaid diagrams), supports in-document link navigation with back button |
 | **Office Preview** | docx rendered as HTML, xlsx/xls rendered as tables (mammoth.js + SheetJS) |
 | Code/Text | 40+ language syntax highlighting |
 | **ZIP Preview** | Click `.zip` files to view contents, one-click **online extraction** |

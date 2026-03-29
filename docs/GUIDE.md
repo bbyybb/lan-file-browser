@@ -296,7 +296,7 @@ ALLOWED_ROOTS = ["D:/课件"]  # 只暴露课件目录
 | 视频 | mp4, webm（自动加载同名字幕，其他格式取决于浏览器） |
 | 音频 | mp3, wav, ogg, flac, aac |
 | PDF | 浏览器内嵌阅读器（手机端提供"在浏览器中打开"按钮） |
-| Markdown | GFM 渲染 + Mermaid 图表 + 文档内链接跳转 |
+| Markdown | GFM 渲染 + Mermaid 图表 + 文档内链接跳转 + 返回导航 |
 | **Office** | docx 渲染为 HTML、xlsx/xls 渲染为表格 |
 | 代码/文本 | 40+ 种语言（py, js, ts, go, java, c, cpp 等） |
 | ZIP | 查看内容列表 + 在线解压（见下方） |
