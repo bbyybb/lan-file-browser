@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-局域网文件浏览器 (LAN File Browser) v2.1.2
+局域网文件浏览器 (LAN File Browser) v2.2.0
 ==========================================
 一个运行在电脑端的 Web 文件浏览器，可通过手机（同局域网内）
 使用浏览器访问 http://<电脑IP>:25600 来浏览、搜索、预览和下载电脑中的文件。
 
-功能特性 v2.1.2:
+功能特性 v2.2.0:
   - 密码保护（启动时自动生成访问密码）
   - 访问日志（记录所有操作到日志文件）
   - 文件上传（手机上传文件到电脑）
@@ -29,7 +29,7 @@
   python file_browser.py
 """
 
-__version__ = "2.1.2"
+__version__ = "2.2.0"
 
 import os
 import sys
@@ -267,7 +267,7 @@ _RES_MARKERS = ['\u767d\u767dLOVE\u5c39\u5c39', 'LFB-bbloveyy-2026',
 _RES_EXPECTED = 'c908d591dce0b0df'
 
 _SEAL_HASHES = {
-    "README.md": "3f3ac0be2291e5ff2b3aa9a86e35531274c0b2e2774f24b8d2862f6877b12a55",
+    "README.md": "201c2c718c4e4141ccc32ea6346feb4535c6dc604a940ab8f1b30bb0c49fe6fb",
     "docs/wechat_pay.jpg": "686b9d5bba59d6831580984cb93804543f346d943f2baf4a94216fd13438f1e6",
     "docs/alipay.jpg": "510155042b703d23f7eeabc04496097a7cc13772c5712c8d0716bab5962172dd",
     "docs/bmc_qr.png": "bfd20ef305007c3dacf30dde49ce8f0fe4d7ac3ffcc86ac1f83bc1e75cccfcd6",
@@ -2645,9 +2645,11 @@ async function renderMermaidBlocks(container){
             const id='mermaid-'+Date.now()+'-'+i;
             const {svg}=await mermaid.render(id, graphDef);
             // 用渲染结果替换原来的代码块
+            // 注意：Mermaid 在 securityLevel:'strict' 模式下生成的 SVG 是安全的，
+            // 不能用 DOMPurify 过滤，否则会剥离 <foreignObject> 导致文字消失
             const div=document.createElement('div');
             div.className='mermaid-rendered';
-            div.innerHTML=sanitizeHTML(svg);
+            div.innerHTML=svg;
             preEl.replaceWith(div);
         }catch(e){
             // 渲染失败时保留原始代码块，加一个错误提示
@@ -2747,6 +2749,8 @@ async function doLogin(){
         // 多用户模式下根据角色应用只读
         if(r.role==="readonly") applyReadOnly();
         showMainApp();
+        // 登录成功后显示登出按钮
+        const lb=document.getElementById("logoutBtn");if(lb)lb.style.display="";
     }
     else{const k=_loginErrMap[r.error];const tr=k?t(k):null;document.getElementById("loginError").textContent=tr||r.error||t("loginFail")}
 }

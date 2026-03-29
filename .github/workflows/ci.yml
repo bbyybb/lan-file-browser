@@ -131,7 +131,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          VER=$(python -c "import re; m=re.search(r'__version__\s*=\s*[\"'\'']([^\"'\'']+)', open('file_browser.py').read()); print('v'+m.group(1))" 2>/dev/null || echo "v2.1.2")
+          VER=$(python -c "import re; m=re.search(r'__version__\s*=\s*[\"'\'']([^\"'\'']+)', open('file_browser.py').read()); print('v'+m.group(1))" 2>/dev/null || echo "v2.2.0")
           echo "version=$VER" >> $GITHUB_OUTPUT
 
       - name: Package (Unix)

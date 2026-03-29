@@ -119,7 +119,7 @@ python file_browser.py --help
 
 ```
 ======================================================
-  [File Browser v2.1.2] started
+  [File Browser v2.2.0] started
 ======================================================
   Local:    http://localhost:25600
   Phone:    http://192.168.1.100:25600
