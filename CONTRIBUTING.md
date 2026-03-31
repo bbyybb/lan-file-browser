@@ -117,9 +117,12 @@ python file_browser.py
 
 # 运行自动化测试（提交前请确保全部通过）
 pytest tests/ -v
+
+# 运行测试并查看覆盖率报告
+pytest tests/ -v --cov=file_browser --cov-report=term-missing
 ```
 
-> 开发依赖包含：Flask（运行时）、pytest（测试）、PyInstaller（构建可执行文件）。
+> 开发依赖包含：Flask（运行时）、pytest + pytest-cov（测试与覆盖率）、PyInstaller（构建可执行文件）。
 > 测试文件按功能模块组织在 `tests/` 目录下，命名规范为 `test_*.py`。
 > **注意**：项目启用了 CSRF 保护，所有 POST 请求须携带 `X-Requested-With: XMLHttpRequest` 请求头。测试中已通过 `conftest.py` 中的 `CSRFClient` 自动处理。手动测试 API 时请确保附带此请求头。
 
@@ -248,9 +251,12 @@ python file_browser.py
 
 # Run automated tests (please ensure all pass before submitting)
 pytest tests/ -v
+
+# Run tests with coverage report
+pytest tests/ -v --cov=file_browser --cov-report=term-missing
 ```
 
-> Dev dependencies include: Flask (runtime), pytest (testing), PyInstaller (building executables).
+> Dev dependencies include: Flask (runtime), pytest + pytest-cov (testing & coverage), PyInstaller (building executables).
 > Test files are organized by feature module in the `tests/` directory, following the `test_*.py` naming convention.
 > **Note**: The project has CSRF protection enabled. All POST requests must include the `X-Requested-With: XMLHttpRequest` header. Tests handle this automatically via `CSRFClient` in `conftest.py`. When manually testing APIs, make sure to include this header.
 

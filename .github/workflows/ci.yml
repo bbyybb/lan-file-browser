@@ -39,11 +39,22 @@ jobs:
           echo "All checks passed."
 
   test:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.8', '3.11', '3.12']
+        include:
+          - os: ubuntu-latest
+            python-version: '3.8'
+          - os: ubuntu-latest
+            python-version: '3.11'
+          - os: ubuntu-latest
+            python-version: '3.12'
+          - os: windows-latest
+            python-version: '3.12'
+          - os: macos-latest
+            python-version: '3.12'
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
@@ -52,8 +63,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
-      - name: Run tests
-        run: pytest tests/ -v
+      - name: Run tests with coverage
+        run: pytest tests/ -v --cov=file_browser --cov-report=term-missing --cov-report=html
+      - name: Upload coverage report
+        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: htmlcov/
 
   build:
     name: Build (${{ matrix.name }})
@@ -96,26 +113,7 @@ jobs:
       - name: Build with PyInstaller
         shell: bash
         run: |
-          # 收集 docs/ 下所有文件作为嵌入资源
-          ADD_DATA_ARGS=""
-          SEP=":"
-          if [[ "${{ matrix.os }}" == windows* ]]; then SEP=";"; fi
-          for f in docs/*; do
-            [ -f "$f" ] && ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data ${f}${SEP}docs"
-          done
-          ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data README.md${SEP}."
-          ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data stop_server.bat${SEP}."
-          ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data stop_server.sh${SEP}."
-          # Bundle static vendor files (offline CDN)
-          if [ -d "static" ]; then
-            ADD_DATA_ARGS="$ADD_DATA_ARGS --add-data static${SEP}static"
-          fi
-
-          pyinstaller --onefile --clean --noconfirm \
-            --name lan-file-browser \
-            --hidden-import flask \
-            $ADD_DATA_ARGS \
-            file_browser.py
+          pyinstaller --clean --noconfirm file_browser.spec
 
       - name: Verify binary runs
         shell: bash
@@ -131,7 +129,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          VER=$(python -c "import re; m=re.search(r'__version__\s*=\s*[\"'\'']([^\"'\'']+)', open('file_browser.py').read()); print('v'+m.group(1))" 2>/dev/null || echo "v2.2.0")
+          VER=$(python -c "import re; m=re.search(r'__version__\s*=\s*[\"'\'']([^\"'\'']+)', open('file_browser.py').read()); print('v'+m.group(1))" 2>/dev/null || echo "v2.6.0")
           echo "version=$VER" >> $GITHUB_OUTPUT
 
       - name: Package (Unix)

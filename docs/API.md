@@ -9,7 +9,8 @@
 ### 通用响应格式
 
 - 成功：返回 JSON 数据，HTTP 状态码 `200`
-- 失败：返回 `{"error": "错误信息"}`，状态码为 `400`/`401`/`403`/`404`/`410`/`429`/`500`
+- 失败：返回 `{"error": "错误信息"}`，状态码为 `400`/`401`/`403`/`404`/`409`/`410`/`429`/`500`
+- `409` 表示同名冲突（复制/移动/解压时），响应包含 `"conflict": true` 标记
 - 错误消息根据客户端语言偏好自动返回中文或英文
 - 服务器内部错误（`500`）返回通用错误消息 `{"error": "内部服务器错误"}`（英文：`"Internal server error"`），不暴露内部实现细节
 - 所有响应包含 `Content-Security-Policy` 安全头，限制资源加载来源，防范 XSS 等注入攻击
@@ -152,21 +153,101 @@
 
 | 方法 | 路径 | 请求体 | 说明 |
 |------|------|--------|------|
-| POST | `/api/upload` | FormData: `path` + `files` | 上传文件（支持多文件） |
+| POST | `/api/upload` | FormData: `path` + `files` + `relativePaths`(可选) + `conflict`(可选) | 上传文件（支持多文件、目录上传） |
 | POST | `/api/mkdir` | `{"path":"父目录","name":"名称"}` | 新建文件夹 |
 | POST | `/api/mkfile` | `{"path":"父目录","name":"文件名","content":"初始内容"}` | 新建文件 |
-| POST | `/api/delete` | `{"path":"路径","recursive":false}` | 删除（recursive=true 递归删除非空文件夹） |
+| POST | `/api/delete` | `{"path":"路径","recursive":false,"stream":false}` | 删除（recursive=true 递归删除非空文件夹，stream=true 流式进度） |
 | POST | `/api/rename` | `{"path":"原路径","name":"新名"}` | 重命名 |
 | POST | `/api/save-file` | `{"path":"路径","content":"内容"}` | 保存编辑（自动 .bak 备份） |
-| POST | `/api/copy` | `{"src":"源路径","dest_dir":"目标目录"}` | 复制文件/文件夹 |
-| POST | `/api/move` | `{"src":"源路径","dest_dir":"目标目录"}` | 移动文件/文件夹 |
-| POST | `/api/extract` | `{"path":"zip路径","dest_dir":"解压目录"}` | 解压 ZIP 文件 |
+| POST | `/api/copy` | `{"src":"源路径","dest_dir":"目标目录","conflict":"...","stream":false}` | 复制文件/文件夹（stream=true 流式进度） |
+| POST | `/api/move` | `{"src":"源路径","dest_dir":"目标目录","conflict":"...","stream":false}` | 移动文件/文件夹（stream=true 流式进度） |
+| POST | `/api/extract` | `{"path":"zip路径","dest_dir":"解压目录","conflict":"...","stream":false}` | 解压 ZIP 文件（stream=true 流式进度） |
+| POST | `/api/upload-init` | `{"filename":"文件名","size":数字,"path":"目标目录"}` | 初始化分片上传（文件≥5MB） |
+| POST | `/api/upload-chunk` | FormData: `upload_id` + `index` + `chunk` | 上传单个分片（5MB/片） |
+| POST | `/api/upload-complete` | `{"upload_id":"上传ID","conflict":"..."}` | 合并分片完成上传 |
+| POST | `/api/upload-cancel` | `{"upload_id":"上传ID"}` | 取消分片上传（清理临时文件） |
+| GET | `/api/upload-status` | `upload_id` | 查询分片上传进度 |
+
+> **`conflict` 参数**（适用于 copy / move / upload / extract）：
+> - 不传（默认）：检测到同名冲突时返回 `409`，前端弹窗让用户选择
+> - `"overwrite"`：覆盖已有文件/文件夹
+> - `"rename"`：自动重命名（保留两者，如 `file_copy1.txt`）
+> - `"skip"`：跳过，不执行操作
+>
+> upload 的 `conflict` 默认值为 `"rename"`（向后兼容）。
+
+> **`stream` 参数**（适用于 copy / move / delete / extract）：
+> - 不传或 `false`（默认）：操作完成后一次性返回 JSON 结果
+> - `true`：返回 `Content-Type: application/x-ndjson` 的流式响应（Newline Delimited JSON），每行一个 JSON 对象，实时推送操作进度
+
+### 流式进度响应
+
+当请求中设置 `"stream": true` 时，服务器返回 NDJSON（Newline Delimited JSON）格式的流式响应，每行一个 JSON 对象。适用于 `/api/copy`、`/api/move`、`/api/delete`、`/api/extract` 四个接口。
+
+**响应头：**
+```
+Content-Type: application/x-ndjson
+Transfer-Encoding: chunked
+```
+
+**进度消息格式：**
+
+```jsonc
+// 大文件复制/移动 — 字节级进度
+{"type": "progress", "current": 471859200, "total": 1073741824, "percent": 44, "speed": "125.3 MB/s"}
+
+// 递归删除 — 文件计数进度
+{"type": "progress", "current": 150, "total": 300, "percent": 50}
+
+// ZIP 解压 — 文件计数进度
+{"type": "progress", "current": 75, "total": 200, "percent": 38}
+
+// 批量操作 — 文件序号 + 单文件进度
+{"type": "progress", "file_index": 3, "file_total": 10, "current": 5242880, "total": 10485760, "percent": 50}
+
+// 操作完成
+{"type": "complete", "ok": true, "dest": "D:/backup/readme.txt"}
+
+// 操作失败
+{"type": "error", "error": "目标目录不存在"}
+```
+
+**使用示例（JavaScript）：**
+
+```javascript
+const response = await fetch('/api/copy', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+  body: JSON.stringify({src: 'D:/large-file.zip', dest_dir: 'E:/backup', stream: true})
+});
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+let buffer = '';
+while (true) {
+  const {done, value} = await reader.read();
+  if (done) break;
+  buffer += decoder.decode(value, {stream: true});
+  const lines = buffer.split('\n');
+  buffer = lines.pop();
+  for (const line of lines) {
+    if (line.trim()) {
+      const msg = JSON.parse(line);
+      if (msg.type === 'progress') {
+        console.log(`进度: ${msg.percent}%`);
+      }
+    }
+  }
+}
+```
 
 **响应示例：**
 
 ```jsonc
 // POST /api/upload（FormData 上传）
-{"saved": ["photo.jpg", "doc.pdf"], "errors": [], "count": 2}
+// 普通上传：FormData 包含 path（目标目录）、files（文件列表）、conflict（可选: overwrite/rename/skip，默认 rename）
+// 目录上传：额外包含 relativePaths（JSON 数组，与 files 一一对应的相对路径，如 ["dir/a.txt", "dir/sub/b.txt"]）
+//          服务端将根据 relativePaths 自动创建子目录并保留目录结构
+{"saved": ["photo.jpg", "doc.pdf"], "skipped": [], "errors": [], "count": 2}
 
 // POST /api/mkdir
 {"ok": true, "path": "D:/docs/新文件夹"}
@@ -183,15 +264,65 @@
 // POST /api/save-file（自动创建 .bak 备份）
 {"ok": true, "size": "2.5 KB", "backup": "readme.txt.bak"}
 
-// POST /api/copy
+// POST /api/copy — 无冲突
 {"ok": true, "dest": "D:/backup/readme.txt"}
 
-// POST /api/move
+// POST /api/copy — 同名冲突（未传 conflict 参数，返回 409）
+// 409: {"error": "目标目录中已存在同名文件/文件夹", "conflict": true, "name": "readme.txt"}
+
+// POST /api/copy — conflict=rename
+{"ok": true, "dest": "D:/backup/readme_copy1.txt"}
+
+// POST /api/copy — conflict=skip
+{"ok": true, "skipped": true, "dest": "D:/backup/readme.txt"}
+
+// POST /api/move（conflict 参数同 copy）
 {"ok": true, "dest": "D:/backup/readme.txt"}
 
-// POST /api/extract
+// POST /api/extract — 无冲突
 {"ok": true}
+
+// POST /api/extract — 同名冲突（未传 conflict 参数，返回 409）
+// 409: {"error": "...", "conflict": true, "files": ["inside.txt", "data.csv"], "total": 2}
 ```
+
+### 分片断点续传
+
+大文件（≥5MB）自动启用分片上传，每片 5MB。支持暂停/继续/取消操作，网络中断后可恢复上传。临时文件 24 小时后自动清理。
+
+**上传流程：** `upload-init` → 多次 `upload-chunk` → `upload-complete`
+
+| 方法 | 路径 | 请求体/参数 | 说明 |
+|------|------|------------|------|
+| POST | `/api/upload-init` | `{"filename":"大文件.zip","size":52428800,"path":"D:/uploads"}` | 初始化上传，返回 `upload_id` 和分片信息 |
+| POST | `/api/upload-chunk` | FormData: `upload_id`(上传ID) + `index`(分片序号，从0开始) + `chunk`(分片文件数据) | 上传单个分片 |
+| POST | `/api/upload-complete` | `{"upload_id":"abc123","conflict":"rename"}` | 合并所有分片，完成上传 |
+| POST | `/api/upload-cancel` | `{"upload_id":"abc123"}` | 取消上传，清理已上传的临时分片 |
+| GET | `/api/upload-status` | `upload_id=abc123` | 查询已上传的分片列表和进度 |
+
+**响应示例：**
+
+```jsonc
+// POST /api/upload-init
+// 请求：{"filename": "大文件.zip", "size": 52428800, "path": "D:/uploads"}
+{"upload_id": "abc123def456", "chunk_size": 5242880, "total_chunks": 10}
+
+// POST /api/upload-chunk（FormData: upload_id + index + chunk）
+{"ok": true, "index": 0}
+
+// POST /api/upload-complete
+// 请求：{"upload_id": "abc123def456", "conflict": "rename"}
+{"ok": true, "path": "D:/uploads/大文件.zip", "size": "50.0 MB"}
+
+// POST /api/upload-cancel
+// 请求：{"upload_id": "abc123def456"}
+{"ok": true}
+
+// GET /api/upload-status?upload_id=abc123def456
+{"upload_id": "abc123def456", "filename": "大文件.zip", "size": 52428800, "chunk_size": 5242880, "total_chunks": 10, "uploaded_chunks": [0, 1, 2, 3], "completed": false}
+```
+
+> **注意**：分片上传的所有接口均需登录认证和 CSRF Header。临时分片文件存储在服务端临时目录中，24 小时未完成的上传会被自动清理。
 
 ---
 

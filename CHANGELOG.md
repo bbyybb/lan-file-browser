@@ -8,6 +8,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [v2.6.0] - 2026-03-31
+
+### Added / 新增
+- 复制/移动/删除/解压操作新增实时进度条，大文件显示字节级进度，批量操作显示文件计数 / Added real-time progress bars for copy/move/delete/extract operations with byte-level progress for large files and file count for batch operations
+- 新增大文件分片断点续传功能，文件≥5MB自动启用分片上传(5MB/片)，支持暂停/继续/取消，网络中断后可恢复 / Added chunked resumable upload for large files (≥5MB, 5MB/chunk), supports pause/resume/cancel with network interruption recovery
+- 新增 5 个分片上传 API: `/api/upload-init`、`/api/upload-chunk`、`/api/upload-complete`、`/api/upload-cancel`、`/api/upload-status` / Added 5 chunked upload API endpoints
+- 新增 `pyproject.toml` 配置 pytest 和 coverage 工具 / Added `pyproject.toml` for pytest and coverage configuration
+- 新增前端模板渲染测试 `test_frontend.py`（HTML 结构、工具栏、依赖库加载、安全函数、I18N 完整性、主题、核心函数） / Added frontend template tests `test_frontend.py` (HTML structure, toolbar, vendor loading, security functions, I18N completeness, theme, core functions)
+- 新增访问日志系统测试 `test_logging.py`（日志配置、写入、fallback 机制、API 日志集成） / Added access log system tests `test_logging.py` (log setup, writing, fallback, API log integration)
+- CI 测试步骤新增 pytest-cov 覆盖率报告（term-missing + HTML），Python 3.12 上传覆盖率报告为 artifact / CI test step now generates pytest-cov coverage reports (term-missing + HTML), uploads as artifact on Python 3.12
+- 开发依赖新增 `pytest-cov>=4.0.0` / Added `pytest-cov>=4.0.0` to dev dependencies
+- 新增目录上传功能：上传对话框新增"选择文件夹"按钮，拖拽上传支持拖入文件夹，自动保留完整目录结构 / Added folder upload: "Select Folder" button in upload dialog, drag-and-drop supports dropping folders, preserves full directory structure
+- 后端 `api_upload` 新增可选 `relativePaths` 参数支持目录结构上传（含双重路径遍历安全校验） / Backend `api_upload` adds optional `relativePaths` parameter for directory structure upload (with double path-traversal security checks)
+- 文件操作同名冲突对话框：复制/移动/解压操作遇到同名文件时弹出选项（覆盖 / 重命名保留两者 / 跳过），行为与操作系统一致 / File conflict dialog: copy/move/extract operations now prompt with options (Overwrite / Rename Keep Both / Skip) when a same-name file exists, matching OS behavior
+- 批量复制/移动支持"应用到后续所有冲突"复选框，避免逐个确认 / Batch copy/move supports "Apply to all conflicts" checkbox to avoid per-file confirmation
+- 上传对话框新增"文件已存在时"选项（重命名/覆盖/跳过） / Upload dialog adds "If file exists" option (Rename / Overwrite / Skip)
+- ZIP 解压冲突检测：解压前检测目标目录是否有同名文件，有则弹窗让用户选择处理方式 / ZIP extract conflict detection: checks for existing files before extraction, prompts user to choose resolution
+- CI 测试 Job 新增 Windows 和 macOS 平台矩阵，测试组合从 3 个增加到 5 个（ubuntu×3 + windows×1 + macOS×1） / CI test job now includes Windows and macOS platform matrix, test combinations increased from 3 to 5
+- 测试用例总数从 237 增加到 431（含参数化展开） / Total test cases increased from 237 to 431 (including parameterized expansion)
+
+### Changed / 变更
+- 拖拽上传和按钮上传均升级为逐文件顺序上传，单个文件失败不影响其余文件 / Upgraded drag-and-drop and button upload to per-file sequential mode, single file failure won't affect others
+- `/api/copy` 同名冲突从静默自动重命名改为默认返回 `409` + `conflict` 信息，新增 `conflict` 参数 / `/api/copy` conflict handling changed from silent auto-rename to returning `409` with conflict info, added `conflict` parameter (overwrite/rename/skip)
+- `/api/move` 同名冲突从直接报错改为返回 `conflict` 详情信息，新增 `conflict` 参数 / `/api/move` conflict handling now returns conflict details, added `conflict` parameter
+- `/api/upload` 新增 `conflict` 表单字段，默认 `rename`（向后兼容） / `/api/upload` added `conflict` form field, default: `rename` (backward compatible)
+- `/api/extract` 新增 `conflict` 参数，默认检测冲突返回 `409` / `/api/extract` added `conflict` parameter, default: detect conflicts and return `409`
+- 全选/反选功能现在同时选中文件和文件夹（之前仅选中文件），多选模式下点击文件夹切换选中状态而非进入目录 / Select All/Deselect All now includes both files and folders (previously files only); clicking a folder in multi-select mode toggles selection instead of navigating
+- 批量下载和文件夹下载新增实时下载进度弹框（显示已下载/总大小），替代之前一闪而过的 toast 提示 / Batch download and folder download now show a real-time progress dialog (downloaded/total bytes) instead of a brief toast notification
+
+### Fixed / 修复
+- 修复复制/移动文件到自身所在目录时，选择"覆盖"会导致源文件被删除的致命 bug（`src == dest` 时覆盖降级为跳过） / Fixed critical bug where overwriting a file/folder copied/moved to its own directory would delete the source (`src == dest` overwrite now gracefully skips)
+- 修复批量复制/移动中为每个文件选择不同冲突策略时计数不准和文件丢失的问题（重写为线性两阶段流程） / Fixed batch copy/move showing incorrect counts and losing files when choosing different conflict resolutions per file (rewritten to linear two-phase flow)
+- 修复上传文件夹时以 `~$` 开头的 Office 临时文件（如 `~$report.docx`）被路径安全检查误拦截的问题 / Fixed folder upload incorrectly rejecting Office temp files starting with `~$` (e.g. `~$report.docx`) due to overly broad path traversal check
+- 修复流式进度模式下复制/移动/删除/解压选择"重命名保留两者"等操作失败的 bug（`log_access` 在生成器中访问已关闭的 request 上下文），使用 `stream_with_context` 保持请求上下文 / Fixed streaming progress mode failing for copy/move/delete/extract operations (e.g. rename-keep-both) due to `log_access` accessing closed request context in generator; applied `stream_with_context` to preserve request context
+- 修复上传过程中直接点击"取消"按钮无响应、弹框无法关闭的 bug（`XHR.abort()` 未触发 `onabort` 导致 Promise 永不 resolve） / Fixed upload cancel button not responding and dialog not closing when clicked directly (XHR abort event was not handled, causing Promise to never resolve)
+
+---
+
 ## [v2.2.0] - 2026-03-30
 
 ### Added / 新增
@@ -178,6 +216,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - 基本文件浏览功能 / Basic file browsing
 - 文件下载 / File download
 
+[v2.6.0]: https://github.com/bbyybb/lan-file-browser/compare/v2.2.0...v2.6.0
 [v2.2.0]: https://github.com/bbyybb/lan-file-browser/compare/v2.1.2...v2.2.0
 [v2.1.2]: https://github.com/bbyybb/lan-file-browser/compare/v2.1.1...v2.1.2
 [v2.1.1]: https://github.com/bbyybb/lan-file-browser/compare/v2.1...v2.1.1

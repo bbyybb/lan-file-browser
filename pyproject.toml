@@ -1,0 +1,23 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+
+[tool.coverage.run]
+source = ["file_browser"]
+omit = [
+    "tests/*",
+    "build.py",
+    "seal.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if getattr\\(sys, .frozen., False\\):",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"

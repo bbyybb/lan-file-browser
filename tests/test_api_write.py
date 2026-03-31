@@ -32,7 +32,7 @@ class TestUpload:
         assert os.path.isfile(os.path.join(temp_dir, "uploaded.txt"))
 
     def test_upload_duplicate_name(self, client, temp_dir):
-        # 上传同名文件两次，第二次应自动加后缀
+        # 上传同名文件两次，第二次默认(rename)应自动加后缀
         for _ in range(2):
             client.post(
                 "/api/upload",
@@ -42,6 +42,45 @@ class TestUpload:
         assert os.path.isfile(os.path.join(temp_dir, "dup.txt"))
         assert os.path.isfile(os.path.join(temp_dir, "dup_1.txt"))
 
+    def test_upload_conflict_overwrite(self, client, temp_dir):
+        """conflict=overwrite 应覆盖已有文件。"""
+        client.post(
+            "/api/upload",
+            data={"path": temp_dir, "files": (io.BytesIO(b"old"), "over.txt")},
+            content_type="multipart/form-data",
+        )
+        r = client.post(
+            "/api/upload",
+            data={"path": temp_dir, "conflict": "overwrite",
+                  "files": (io.BytesIO(b"new"), "over.txt")},
+            content_type="multipart/form-data",
+        )
+        assert r.status_code == 200
+        assert r.get_json()["count"] == 1
+        with open(os.path.join(temp_dir, "over.txt"), "rb") as f:
+            assert f.read() == b"new"
+        # 不应产生重命名文件
+        assert not os.path.exists(os.path.join(temp_dir, "over_1.txt"))
+
+    def test_upload_conflict_skip(self, client, temp_dir):
+        """conflict=skip 应跳过已存在的文件。"""
+        client.post(
+            "/api/upload",
+            data={"path": temp_dir, "files": (io.BytesIO(b"original"), "skip_me.txt")},
+            content_type="multipart/form-data",
+        )
+        r = client.post(
+            "/api/upload",
+            data={"path": temp_dir, "conflict": "skip",
+                  "files": (io.BytesIO(b"should not save"), "skip_me.txt")},
+            content_type="multipart/form-data",
+        )
+        assert r.status_code == 200
+        assert r.get_json()["count"] == 0
+        assert "skip_me.txt" in r.get_json()["skipped"]
+        with open(os.path.join(temp_dir, "skip_me.txt"), "rb") as f:
+            assert f.read() == b"original"
+
     def test_upload_no_files(self, client, temp_dir):
         r = client.post(
             "/api/upload",
@@ -49,6 +88,119 @@ class TestUpload:
             content_type="multipart/form-data",
         )
         assert r.status_code == 400
+
+    # ── 目录上传测试 ──
+
+    def test_upload_directory_structure(self, client, temp_dir):
+        """目录上传：文件按相对路径放置到正确的子目录中。"""
+        rel_paths = json.dumps(["myFolder/a.txt", "myFolder/sub/b.txt"])
+        r = client.post(
+            "/api/upload",
+            data={
+                "path": temp_dir,
+                "relativePaths": rel_paths,
+                "files": [
+                    (io.BytesIO(b"content a"), "a.txt"),
+                    (io.BytesIO(b"content b"), "b.txt"),
+                ],
+            },
+            content_type="multipart/form-data",
+        )
+        assert r.status_code == 200
+        result = r.get_json()
+        assert result["count"] == 2
+        assert os.path.isfile(os.path.join(temp_dir, "myFolder", "a.txt"))
+        assert os.path.isfile(os.path.join(temp_dir, "myFolder", "sub", "b.txt"))
+        with open(os.path.join(temp_dir, "myFolder", "a.txt"), "rb") as f:
+            assert f.read() == b"content a"
+        with open(os.path.join(temp_dir, "myFolder", "sub", "b.txt"), "rb") as f:
+            assert f.read() == b"content b"
+
+    def test_upload_directory_path_traversal_rejected(self, client, temp_dir):
+        """目录上传中 .. 路径遍历必须被拒绝。"""
+        rel_paths = json.dumps(["../escape.txt"])
+        r = client.post(
+            "/api/upload",
+            data={
+                "path": temp_dir,
+                "relativePaths": rel_paths,
+                "files": (io.BytesIO(b"evil"), "escape.txt"),
+            },
+            content_type="multipart/form-data",
+        )
+        assert r.status_code == 200
+        result = r.get_json()
+        assert result["count"] == 0
+        assert len(result["errors"]) == 1
+
+    def test_upload_directory_dotdot_in_middle(self, client, temp_dir):
+        """相对路径中间包含 .. 也必须被拒绝。"""
+        rel_paths = json.dumps(["a/../../escape.txt"])
+        r = client.post(
+            "/api/upload",
+            data={
+                "path": temp_dir,
+                "relativePaths": rel_paths,
+                "files": (io.BytesIO(b"evil"), "escape.txt"),
+            },
+            content_type="multipart/form-data",
+        )
+        result = r.get_json()
+        assert result["count"] == 0
+        assert len(result["errors"]) == 1
+
+    def test_upload_mixed_flat_and_directory(self, client, temp_dir):
+        """混合上传：部分文件有相对路径，部分没有。"""
+        rel_paths = json.dumps(["", "folder/nested.txt"])
+        r = client.post(
+            "/api/upload",
+            data={
+                "path": temp_dir,
+                "relativePaths": rel_paths,
+                "files": [
+                    (io.BytesIO(b"flat content"), "flat.txt"),
+                    (io.BytesIO(b"nested content"), "nested.txt"),
+                ],
+            },
+            content_type="multipart/form-data",
+        )
+        assert r.status_code == 200
+        result = r.get_json()
+        assert result["count"] == 2
+        assert os.path.isfile(os.path.join(temp_dir, "flat.txt"))
+        assert os.path.isfile(os.path.join(temp_dir, "folder", "nested.txt"))
+
+    def test_upload_without_relative_paths_unchanged(self, client, temp_dir):
+        """不传 relativePaths 时行为与原来完全相同（向后兼容）。"""
+        r = client.post(
+            "/api/upload",
+            data={
+                "path": temp_dir,
+                "files": (io.BytesIO(b"normal"), "normal.txt"),
+            },
+            content_type="multipart/form-data",
+        )
+        assert r.status_code == 200
+        result = r.get_json()
+        assert result["count"] == 1
+        assert "normal.txt" in result["saved"]
+        assert os.path.isfile(os.path.join(temp_dir, "normal.txt"))
+
+    def test_upload_directory_deep_nesting(self, client, temp_dir):
+        """深层嵌套目录结构自动创建。"""
+        rel_paths = json.dumps(["a/b/c/d/deep.txt"])
+        r = client.post(
+            "/api/upload",
+            data={
+                "path": temp_dir,
+                "relativePaths": rel_paths,
+                "files": (io.BytesIO(b"deep"), "deep.txt"),
+            },
+            content_type="multipart/form-data",
+        )
+        assert r.status_code == 200
+        assert r.get_json()["count"] == 1
+        assert os.path.isfile(os.path.join(temp_dir, "a", "b", "c", "d", "deep.txt"))
 
 
 # ════════════════════════════════════════════════
@@ -269,22 +421,88 @@ class TestCopy:
         # 原文件仍在
         assert os.path.isfile(os.path.join(temp_dir, "hello.txt"))
 
-    def test_copy_conflict_auto_rename(self, client, temp_dir):
-        # 先复制一份到 subdir
+    def test_copy_conflict_returns_409(self, client, temp_dir):
+        """同名冲突时无 conflict 参数应返回 409 + conflict 标记。"""
         src = os.path.join(temp_dir, "hello.txt").replace("\\", "/")
         dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
-        # subdir 已有 nested.txt，但没有 hello.txt
+        # 先复制一份
         client.post("/api/copy", json={"src": src, "dest_dir": dest_dir})
-        # 再复制一次，应该自动重命名
+        # 再复制一次，应返回 409
         r = client.post("/api/copy", json={"src": src, "dest_dir": dest_dir})
+        assert r.status_code == 409
+        data = r.get_json()
+        assert data["conflict"] is True
+        assert data["name"] == "hello.txt"
+
+    def test_copy_conflict_rename(self, client, temp_dir):
+        """conflict=rename 应自动重命名。"""
+        src = os.path.join(temp_dir, "hello.txt").replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        client.post("/api/copy", json={"src": src, "dest_dir": dest_dir})
+        r = client.post("/api/copy", json={"src": src, "dest_dir": dest_dir, "conflict": "rename"})
         assert r.status_code == 200
         dest = r.get_json()["dest"]
         assert "copy" in dest.lower()
 
+    def test_copy_conflict_overwrite(self, client, temp_dir):
+        """conflict=overwrite 应覆盖已有文件。"""
+        src = os.path.join(temp_dir, "hello.txt").replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        client.post("/api/copy", json={"src": src, "dest_dir": dest_dir})
+        # 修改目标文件内容
+        with open(os.path.join(temp_dir, "subdir", "hello.txt"), "w") as f:
+            f.write("old content")
+        r = client.post("/api/copy", json={"src": src, "dest_dir": dest_dir, "conflict": "overwrite"})
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+        # 确认内容被覆盖（用源文件的内容）
+        with open(os.path.join(temp_dir, "subdir", "hello.txt")) as f:
+            assert "Hello, World!" in f.read()
 
-# ════════════════════════════════════════════════
-# /api/move
-# ════════════════════════════════════════════════
+    def test_copy_conflict_skip(self, client, temp_dir):
+        """conflict=skip 应跳过不复制。"""
+        src = os.path.join(temp_dir, "hello.txt").replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        client.post("/api/copy", json={"src": src, "dest_dir": dest_dir})
+        with open(os.path.join(temp_dir, "subdir", "hello.txt"), "w") as f:
+            f.write("should stay")
+        r = client.post("/api/copy", json={"src": src, "dest_dir": dest_dir, "conflict": "skip"})
+        assert r.status_code == 200
+        assert r.get_json()["skipped"] is True
+        with open(os.path.join(temp_dir, "subdir", "hello.txt")) as f:
+            assert f.read() == "should stay"
+
+    def test_copy_dir_conflict_overwrite(self, client, temp_dir):
+        """目录复制 conflict=overwrite 应替换目标目录。"""
+        src_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "empty_dir").replace("\\", "/")
+        # 先复制一次创建 empty_dir/subdir
+        client.post("/api/copy", json={"src": src_dir, "dest_dir": dest_dir})
+        assert os.path.isdir(os.path.join(temp_dir, "empty_dir", "subdir"))
+        # 覆盖
+        r = client.post("/api/copy", json={"src": src_dir, "dest_dir": dest_dir, "conflict": "overwrite"})
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+
+    def test_copy_same_dir_overwrite_safe(self, client, temp_dir):
+        """复制到自身所在目录 + overwrite 不应删除源文件。"""
+        src = os.path.join(temp_dir, "hello.txt").replace("\\", "/")
+        dest_dir = temp_dir.replace("\\", "/")
+        r = client.post("/api/copy", json={"src": src, "dest_dir": dest_dir, "conflict": "overwrite"})
+        assert r.status_code == 200
+        assert r.get_json()["skipped"] is True
+        # 源文件必须仍然存在
+        assert os.path.isfile(os.path.join(temp_dir, "hello.txt"))
+
+    def test_copy_same_dir_rename(self, client, temp_dir):
+        """复制到自身所在目录 + rename 应创建副本。"""
+        src = os.path.join(temp_dir, "hello.txt").replace("\\", "/")
+        dest_dir = temp_dir.replace("\\", "/")
+        r = client.post("/api/copy", json={"src": src, "dest_dir": dest_dir, "conflict": "rename"})
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+        assert os.path.isfile(os.path.join(temp_dir, "hello.txt"))
+        assert os.path.isfile(os.path.join(temp_dir, "hello_copy1.txt"))
 class TestMove:
     def test_move_file(self, client, temp_dir):
         # 创建要移动的文件
@@ -312,9 +530,8 @@ class TestMove:
         assert r.status_code == 400
 
     def test_move_conflict(self, client, temp_dir):
-        # subdir 已有 nested.txt
+        """同名冲突时无 conflict 参数应返回 409 + conflict 标记。"""
         src = os.path.join(temp_dir, "subdir", "nested.txt").replace("\\", "/")
-        # 在 temp_dir 创建同名文件
         with open(os.path.join(temp_dir, "nested.txt"), "w") as f:
             f.write("conflict")
         dest_dir = temp_dir.replace("\\", "/")
@@ -323,9 +540,65 @@ class TestMove:
             json={"src": src, "dest_dir": dest_dir},
         )
         assert r.status_code == 409
+        data = r.get_json()
+        assert data["conflict"] is True
+        assert data["name"] == "nested.txt"
 
+    def test_move_conflict_overwrite(self, client, temp_dir):
+        """conflict=overwrite 应覆盖已有文件并删除源文件。"""
+        src_path = os.path.join(temp_dir, "to_move.txt")
+        with open(src_path, "w") as f:
+            f.write("new content")
+        # 在目标目录创建同名文件
+        with open(os.path.join(temp_dir, "subdir", "to_move.txt"), "w") as f:
+            f.write("old content")
+        src = src_path.replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        r = client.post("/api/move", json={"src": src, "dest_dir": dest_dir, "conflict": "overwrite"})
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+        assert not os.path.isfile(src_path)
+        with open(os.path.join(temp_dir, "subdir", "to_move.txt")) as f:
+            assert f.read() == "new content"
 
-# ════════════════════════════════════════════════
+    def test_move_conflict_rename(self, client, temp_dir):
+        """conflict=rename 应自动重命名。"""
+        src_path = os.path.join(temp_dir, "rename_me.txt")
+        with open(src_path, "w") as f:
+            f.write("data")
+        with open(os.path.join(temp_dir, "subdir", "rename_me.txt"), "w") as f:
+            f.write("existing")
+        src = src_path.replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        r = client.post("/api/move", json={"src": src, "dest_dir": dest_dir, "conflict": "rename"})
+        assert r.status_code == 200
+        dest = r.get_json()["dest"]
+        assert "copy" in dest.lower()
+        assert not os.path.isfile(src_path)  # 源文件已移走
+
+    def test_move_conflict_skip(self, client, temp_dir):
+        """conflict=skip 应跳过，源文件保持不变。"""
+        src_path = os.path.join(temp_dir, "skip_me.txt")
+        with open(src_path, "w") as f:
+            f.write("source")
+        with open(os.path.join(temp_dir, "subdir", "skip_me.txt"), "w") as f:
+            f.write("existing")
+        src = src_path.replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        r = client.post("/api/move", json={"src": src, "dest_dir": dest_dir, "conflict": "skip"})
+        assert r.status_code == 200
+        assert r.get_json()["skipped"] is True
+        assert os.path.isfile(src_path)  # 源文件未被删除
+
+    def test_move_same_dir_overwrite_safe(self, client, temp_dir):
+        """移动到自身所在目录 + overwrite 不应删除源文件。"""
+        src_path = os.path.join(temp_dir, "hello.txt")
+        src = src_path.replace("\\", "/")
+        dest_dir = temp_dir.replace("\\", "/")
+        r = client.post("/api/move", json={"src": src, "dest_dir": dest_dir, "conflict": "overwrite"})
+        assert r.status_code == 200
+        assert r.get_json()["skipped"] is True
+        assert os.path.isfile(src_path)  # 源文件必须仍然存在# ════════════════════════════════════════════════
 # /api/clipboard POST
 # ════════════════════════════════════════════════
 class TestClipboardWrite:
@@ -436,6 +709,56 @@ class TestExtract:
             json={"path": "/nonexistent/abc.zip", "dest_dir": dest_dir},
         )
         assert r.status_code == 404
+
+    def test_extract_conflict_returns_409(self, client, temp_dir):
+        """解压时有冲突文件且无 conflict 参数应返回 409。"""
+        zip_path = os.path.join(temp_dir, "archive.zip").replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        # 先解压一次
+        client.post("/api/extract", json={"path": zip_path, "dest_dir": dest_dir})
+        # 再解压应返回 409（inside.txt 已存在）
+        r = client.post("/api/extract", json={"path": zip_path, "dest_dir": dest_dir})
+        assert r.status_code == 409
+        data = r.get_json()
+        assert data["conflict"] is True
+        assert "inside.txt" in data["files"]
+
+    def test_extract_conflict_overwrite(self, client, temp_dir):
+        """conflict=overwrite 应覆盖已有文件。"""
+        zip_path = os.path.join(temp_dir, "archive.zip").replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        client.post("/api/extract", json={"path": zip_path, "dest_dir": dest_dir})
+        # 修改已解压的文件
+        with open(os.path.join(temp_dir, "subdir", "inside.txt"), "w") as f:
+            f.write("modified")
+        r = client.post("/api/extract", json={"path": zip_path, "dest_dir": dest_dir, "conflict": "overwrite"})
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+        with open(os.path.join(temp_dir, "subdir", "inside.txt")) as f:
+            assert f.read() == "zip content here"
+
+    def test_extract_conflict_skip(self, client, temp_dir):
+        """conflict=skip 应跳过已存在的文件。"""
+        zip_path = os.path.join(temp_dir, "archive.zip").replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        client.post("/api/extract", json={"path": zip_path, "dest_dir": dest_dir})
+        with open(os.path.join(temp_dir, "subdir", "inside.txt"), "w") as f:
+            f.write("should stay")
+        r = client.post("/api/extract", json={"path": zip_path, "dest_dir": dest_dir, "conflict": "skip"})
+        assert r.status_code == 200
+        with open(os.path.join(temp_dir, "subdir", "inside.txt")) as f:
+            assert f.read() == "should stay"
+
+    def test_extract_conflict_rename(self, client, temp_dir):
+        """conflict=rename 应重命名冲突文件。"""
+        zip_path = os.path.join(temp_dir, "archive.zip").replace("\\", "/")
+        dest_dir = os.path.join(temp_dir, "subdir").replace("\\", "/")
+        client.post("/api/extract", json={"path": zip_path, "dest_dir": dest_dir})
+        r = client.post("/api/extract", json={"path": zip_path, "dest_dir": dest_dir, "conflict": "rename"})
+        assert r.status_code == 200
+        # 原文件保留，新文件被重命名
+        assert os.path.isfile(os.path.join(temp_dir, "subdir", "inside.txt"))
+        assert os.path.isfile(os.path.join(temp_dir, "subdir", "inside_1.txt"))
 
 
 # ════════════════════════════════════════════════

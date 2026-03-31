@@ -343,6 +343,7 @@ When playing video, the program auto-detects subtitle files with the same name i
 Click a `.zip` file to open the preview modal, where you can:
 - View the complete file list and sizes inside the ZIP
 - Click **"Extract Here"** to extract contents to the ZIP's directory
+- If files with the same name exist at the target, a conflict dialog appears with options to overwrite, rename, or skip
 
 > Other archive formats (.rar, .7z, etc.) don't support preview — download and extract locally.
 
@@ -364,7 +365,7 @@ Supports Tab indentation, modification status indicator, and unsaved changes clo
 | Method | Operation |
 |--------|-----------|
 | Single file | Click ⬇ button in list, or click "Download" in preview modal |
-| Batch download | Toolbar → "☐ Multi-select" → check files (or click "☑ All" to select all) → "📦 Batch Download" |
+| Batch download | Toolbar → "☐ Multi-select" → check files (or click "☑ All" to select all files and folders) → "📦 Batch Download" |
 | Batch delete | In multi-select mode → "🗑 Batch Delete" → confirmation dialog |
 | Batch move | In multi-select mode → "✂ Batch Move" → select target directory |
 | Batch copy | In multi-select mode → "📋 Batch Copy" → select target directory |
@@ -381,16 +382,33 @@ Click the **⬇** button next to a folder, and the entire folder is recursively 
 
 ## Upload Files & Drag-and-Drop
 
-**Method 1: Button upload**
+**Method 1: Button upload (files)**
 1. Navigate to target directory → click toolbar **"⬆ Upload"**
-2. Select files (supports multiple) → upload begins
+2. Click **"Choose Files"** → select files (supports multiple) → upload begins
 
-**Method 2: Drag and drop**
-Drag files from your desktop or file manager **directly onto the browser page** and release to upload.
+**Method 2: Button upload (folder)**
+1. Navigate to target directory → click toolbar **"⬆ Upload"**
+2. Click **"Choose Folder"** → select a folder → all files within the folder are uploaded with directory structure preserved
+
+**Method 3: Drag and drop**
+Drag files or **folders** from your desktop or file manager **directly onto the browser page** and release to upload. When dropping a folder, all files inside are recursively read and uploaded with directory structure preserved.
 
 - A **real-time progress bar** is displayed during upload (percentage + uploaded/total size); drag-and-drop uploads show a floating progress bar at the bottom
 - No file size limit
-- Same-name files auto-get numeric suffix, won't overwrite
+- Regular file uploads handle duplicates according to the option selected in the upload dialog (default: auto-rename with numeric suffix; also supports overwrite or skip)
+
+**Chunked Resumable Upload for Large Files:**
+
+When a file is ≥5MB, the system automatically enables chunked upload mode (5MB per chunk):
+
+- **Auto-chunking**: The frontend automatically splits large files into 5MB chunks and uploads them sequentially
+- **Resumable upload**: After a network interruption, re-uploading skips already-uploaded chunks and resumes from the breakpoint
+- **Pause/Resume**: You can pause the upload at any time and resume later
+- **Cancel upload**: Canceling automatically cleans up uploaded temporary chunk files on the server
+- **Progress display**: Shows real-time overall progress and current chunk progress
+- **Auto-cleanup**: Server-side temporary chunk files are automatically cleaned up after 24 hours, no manual management needed
+
+> Both drag-and-drop and button uploads have been upgraded to per-file sequential upload mode — a single file failure won't affect the remaining files.
 
 ---
 
@@ -401,7 +419,15 @@ Drag files from your desktop or file manager **directly onto the browser page** 
 3. Click folders to enter, click `⬆ ..` to go up, click the top input box to manually type a path
 4. Click **"Confirm Current Directory"** at the target directory
 
-Duplicates auto-get `_copy1`, `_copy2` suffix.
+When a file/folder with the same name exists at the target, a conflict dialog appears with options to overwrite, rename (keep both), or skip.
+
+**Real-time Progress Bar:** Copy, move, delete (recursive), and ZIP extraction operations all support real-time progress bar display:
+- **Large file copy/move**: Shows byte-level progress (e.g., 45% 450MB/1GB) with real-time transfer speed
+- **Recursive delete**: Shows deleted file count progress (e.g., 150/300)
+- **ZIP extraction**: Shows extracted file count progress (e.g., 75/200)
+- **Batch operations**: Shows current file index (e.g., [3/10]), with independent progress for each file
+
+> The progress bar is powered by the API's `stream=true` parameter using NDJSON streaming responses. See [API Documentation](API_EN.md#streaming-progress-response) for details.
 
 ---
 
@@ -411,7 +437,7 @@ Duplicates auto-get `_copy1`, `_copy2` suffix.
 2. A **visual directory picker** appears (same UI as copy)
 3. Browse to the target directory and click confirm
 
-Shows a conflict warning if same-name file exists at target. Cannot move a folder into itself or its subdirectories.
+When a same-name file exists at the target, a conflict dialog appears with options to overwrite, rename (keep both), or skip. Cannot move a folder into itself or its subdirectories.
 
 ---
 
@@ -723,7 +749,8 @@ Logged operation types: LOGIN, BROWSE, PREVIEW, RAW, SEARCH, CONTENT_SEARCH, DOW
 │  ┌─────────────────────┴──────────────────────┐  │
 │  │  file_browser.py (single file, all logic)  │  │
 │  │                                             │  │
-│  │  [Auth]    POST /api/login GET /api/check-auth│ │
+│  │  [Auth]    POST /api/login POST /api/logout  │  │
+│  │            GET /api/check-auth              │  │
 │  │  [Browse]  /api/list /api/drives /api/info  │  │
 │  │  [Search]  /api/search /api/search-content  │  │
 │  │  [Preview] /api/file /api/raw /api/zip-list │  │
@@ -731,6 +758,11 @@ Logged operation types: LOGIN, BROWSE, PREVIEW, RAW, SEARCH, CONTENT_SEARCH, DOW
 │  │  [Manage]  /api/upload /api/mkdir /api/delete│ │
 │  │            /api/rename /api/copy /api/move  │  │
 │  │            /api/extract /api/save-file      │  │
+│  │  [Chunked] /api/upload-init                  │  │
+│  │            /api/upload-chunk                 │  │
+│  │            /api/upload-complete              │  │
+│  │            /api/upload-cancel                │  │
+│  │            /api/upload-status                │  │
 │  │  [Share]   /api/share  /share/<token>       │  │
 │  │  [Other]   /api/clipboard /api/bookmarks    │  │
 │  │            /api/folder-size                 │  │

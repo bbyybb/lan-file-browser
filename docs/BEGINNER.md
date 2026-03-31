@@ -8,8 +8,9 @@
 
 > **快捷方式**：如果不想安装 Python，可以直接从 [Releases](https://github.com/bbyybb/lan-file-browser/releases) 下载可执行文件，跳过下面的第一步到第三步。
 > - **Windows**：下载 `FileBrowser.exe`，双击运行
-> - **macOS**：下载 `FileBrowser-macOS-*`，打开终端执行 `cd ~/Downloads && chmod +x FileBrowser* && ./FileBrowser*`
-> - **Linux**：下载 `FileBrowser-Linux`，打开终端执行 `cd ~/Downloads && chmod +x FileBrowser* && ./FileBrowser*`
+> - **macOS**：下载 `lan-file-browser-macOS-*`，双击即可运行（系统会自动打开终端）
+>>   首次运行若提示"无法验证开发者"，请前往「系统设置 > 隐私与安全性」点击「仍要打开」
+> - **Linux**：下载 `lan-file-browser-Linux`，双击或在终端执行 `cd ~/Downloads && ./lan-file-browser*`
 
 ---
 
@@ -181,7 +182,7 @@ python file_browser.py
 
 ```
 ======================================================
-  [File Browser v2.2.0] started
+  [File Browser v2.6.0] started
 ======================================================
   Local:    http://localhost:25600
   Phone:    http://192.168.1.100:25600    ← 手机要打开的地址
@@ -280,7 +281,7 @@ python file_browser.py --roots D:/共享资料 --read-only --no-password
 1. 打开一个文件的预览
 2. 点击顶部的 **"🔗 分享"** 按钮
 3. 复制生成的链接，发给朋友
-4. 朋友点击链接直接下载，不需要登录（链接 1 小时后自动失效）
+4. 朋友点击链接直接下载，不需要登录（链接有效期可选：5分钟 / 30分钟 / 1小时 / 6小时 / 12小时 / 24小时，默认1小时，过期后自动失效）
 
 ---
 

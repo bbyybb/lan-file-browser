@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-局域网文件浏览器 (LAN File Browser) v2.2.0
+局域网文件浏览器 (LAN File Browser) v2.6.0
 ==========================================
 一个运行在电脑端的 Web 文件浏览器，可通过手机（同局域网内）
 使用浏览器访问 http://<电脑IP>:25600 来浏览、搜索、预览和下载电脑中的文件。
 
-功能特性 v2.2.0:
+功能特性 v2.6.0:
   - 密码保护（启动时自动生成访问密码）
   - 访问日志（记录所有操作到日志文件）
   - 文件上传（手机上传文件到电脑）
@@ -29,7 +29,7 @@
   python file_browser.py
 """
 
-__version__ = "2.2.0"
+__version__ = "2.6.0"
 
 import os
 import sys
@@ -56,7 +56,7 @@ from logging.handlers import RotatingFileHandler
 
 from flask import (
     Flask, render_template_string, request, send_file,
-    jsonify, abort, make_response, Response,
+    jsonify, abort, make_response, Response, stream_with_context,
 )
 
 # ════════════════════════════════════════════════════════════
@@ -184,6 +184,14 @@ share_tokens = {}
 # 线程安全锁（保护上述全局字典的并发访问）
 _state_lock = threading.Lock()
 
+# ── 分片续传相关 ──
+_CHUNK_SIZE = 5 * 1024 * 1024                           # 每个分片 5MB
+_CHUNK_THRESHOLD = 5 * 1024 * 1024                       # 文件 ≥5MB 使用分片上传
+_UPLOAD_TMP_DIR = os.path.join(tempfile.gettempdir(), "lan_fb_uploads")
+_UPLOAD_SESSION_EXPIRY = 24 * 3600                       # 上传会话 24 小时过期
+_upload_sessions = {}           # {upload_id: session_info}
+_upload_sessions_lock = threading.Lock()
+
 # ════════════════════════════════════════════════════════════
 # API 错误消息国际化
 # ════════════════════════════════════════════════════════════
@@ -244,6 +252,10 @@ _API_MESSAGES = {
     "calc_timeout":         {"zh": "计算超时", "en": "Calculation timed out"},
     "regex_error":          {"zh": "正则表达式错误", "en": "Regular expression error"},
     "zip_illegal_path":     {"zh": "ZIP 包含非法路径", "en": "ZIP contains illegal path"},
+    "upload_path_traversal":{"zh": "上传路径包含非法遍历", "en": "Upload path contains illegal traversal"},
+    "upload_session_expired":{"zh":"上传会话不存在或已过期","en":"Upload session not found or expired"},
+    "upload_no_chunk":      {"zh": "未收到分片数据", "en": "No chunk data received"},
+    "upload_temp_missing":  {"zh": "临时文件丢失", "en": "Temporary file missing"},
     "internal_error":       {"zh": "内部服务器错误", "en": "Internal server error"},
 }
 
@@ -267,7 +279,7 @@ _RES_MARKERS = ['\u767d\u767dLOVE\u5c39\u5c39', 'LFB-bbloveyy-2026',
 _RES_EXPECTED = 'c908d591dce0b0df'
 
 _SEAL_HASHES = {
-    "README.md": "201c2c718c4e4141ccc32ea6346feb4535c6dc604a940ab8f1b30bb0c49fe6fb",
+    "README.md": "af0b52196bd8cfa8471f743aaaceb9e42701ec6486eb09da188d4f238f082314",
     "docs/wechat_pay.jpg": "686b9d5bba59d6831580984cb93804543f346d943f2baf4a94216fd13438f1e6",
     "docs/alipay.jpg": "510155042b703d23f7eeabc04496097a7cc13772c5712c8d0716bab5962172dd",
     "docs/bmc_qr.png": "bfd20ef305007c3dacf30dde49ce8f0fe4d7ac3ffcc86ac1f83bc1e75cccfcd6",
@@ -426,6 +438,7 @@ def _get_current_role():
     # 多用户模式
     with _state_lock:
         if USERS and token in user_sessions:
+            user_sessions[token]["last_active"] = time.time()
             return user_sessions[token]["role"]
     # 单密码模式
     if not USERS and hmac.compare_digest(token, AUTH_TOKEN):
@@ -843,14 +856,20 @@ def safe_path(raw_path):
 def detect_encoding(filepath):
     """
     检测文件编码。依次尝试 utf-8 -> gbk -> gb18030 -> latin-1。
+    只读取前 8KB 进行探测，避免大文件性能问题。
 
     Returns:
         str | None: 检测到的编码名称，全部失败返回 None
     """
+    _DETECT_SIZE = 8192
+    try:
+        with open(filepath, 'rb') as f:
+            raw = f.read(_DETECT_SIZE)
+    except OSError:
+        return None
     for enc in ['utf-8', 'gbk', 'gb18030', 'latin-1']:
         try:
-            with open(filepath, 'r', encoding=enc) as f:
-                f.read()
+            raw.decode(enc)
             return enc
         except (UnicodeDecodeError, UnicodeError):
             continue
@@ -956,9 +975,8 @@ def _add_security_headers(response):
 def _enforce_security_policy():
     # CSRF 保护: 所有 POST 请求（除 /api/login 和文件上传外）必须携带自定义 Header
     # 浏览器同源策略阻止跨站请求设置自定义 Header，因此这能有效防御 CSRF
-    if request.method == "POST" and request.path not in ("/api/login",):
-        # 文件上传使用 multipart/form-data，前端通过 FormData 发送，
-        # 为兼容性仍要求 X-Requested-With 头
+    if request.method in ("POST", "DELETE", "PUT", "PATCH") and request.path not in ("/api/login",):
+        # 所有修改型请求必须携带自定义 Header（浏览器同源策略阻止跨站设置）
         if request.headers.get("X-Requested-With") != "XMLHttpRequest":
             return jsonify({"error": _api_t("invalid_request")}), 403
     if _rnd.random() < 0.03:
@@ -1001,10 +1019,14 @@ def api_login():
     ip = request.remote_addr or "unknown"
     now = datetime.now().timestamp()
     with _state_lock:
-        # 定期清理过期的 login_attempts 条目（每 100 次登录请求清理一次，防止内存泄漏）
+        # 清理过期条目；若仍超过上限则强制淘汰最旧条目（防止分布式攻击下内存泄漏）
         if len(login_attempts) > 100:
             expired_ips = [k for k, v in login_attempts.items() if all(now - ts > LOGIN_RATE_WINDOW for ts in v)]
             for k in expired_ips:
+                del login_attempts[k]
+        if len(login_attempts) > 10000:
+            to_remove = sorted(login_attempts, key=lambda k: max(login_attempts[k]))[:len(login_attempts) - 5000]
+            for k in to_remove:
                 del login_attempts[k]
         timestamps = login_attempts.get(ip, [])
         timestamps = [t for t in timestamps if now - t < LOGIN_RATE_WINDOW]
@@ -1027,12 +1049,12 @@ def api_login():
                 role = info.get("role", "readonly")
                 token = secrets.token_hex(16)
                 with _state_lock:
-                    # 限制 session 数量，防止内存泄漏（保留最近 1000 个）
+                    # 限制 session 数量，按最后活跃时间淘汰最不活跃的
                     if len(user_sessions) > 1000:
-                        oldest = list(user_sessions.keys())[:len(user_sessions) - 500]
-                        for k in oldest:
+                        by_active = sorted(user_sessions, key=lambda k: user_sessions[k].get("last_active", 0))
+                        for k in by_active[:len(user_sessions) - 500]:
                             del user_sessions[k]
-                    user_sessions[token] = {"user": username, "role": role}
+                    user_sessions[token] = {"user": username, "role": role, "last_active": time.time()}
                     login_attempts.pop(ip, None)
                 log_access("LOGIN", f"success user={username} role={role}")
                 resp = make_response(jsonify({"ok": True, "user": username, "role": role}))
@@ -1589,11 +1611,13 @@ def api_batch_download():
 @require_writable
 def api_upload():
     """
-    文件上传 — 将文件保存到指定目录。
+    文件上传 — 将文件保存到指定目录。支持目录上传（通过 relativePaths 保留目录结构）。
 
     表单字段:
         path (str): 目标目录路径
         files (file): 一个或多个上传文件
+        relativePaths (str, optional): JSON 数组，每个元素为对应文件的相对路径（目录上传时使用）
+        conflict (str, optional): 冲突处理方式 "overwrite"|"rename"|"skip"，默认 "rename"
     """
     target_dir = request.form.get("path", "")
     real_dir = safe_path(target_dir)
@@ -1604,22 +1628,89 @@ def api_upload():
     if not files:
         return jsonify({"error": _api_t("no_upload_files")}), 400
 
+    # 冲突处理方式，默认 rename（保持向后兼容）
+    conflict = request.form.get("conflict", "rename")
+
+    # 解析可选的相对路径列表（目录上传时由前端传入）
+    raw_rel = request.form.get("relativePaths", "")
+    rel_paths = None
+    if raw_rel:
+        try:
+            rel_paths = json.loads(raw_rel)
+        except (json.JSONDecodeError, TypeError):
+            rel_paths = None
+
     saved = []
+    skipped = []
     errors = []
-    for f in files:
+    created_dirs = set()
+    real_dir_abs = os.path.realpath(real_dir)
+
+    for idx, f in enumerate(files):
         if not f.filename:
             continue
-        # 安全处理文件名：移除路径分隔符
-        filename = os.path.basename(f.filename)
-        dest = os.path.join(real_dir, filename)
-        # 如果同名文件已存在，自动加数字后缀
-        if os.path.exists(dest):
-            base, ext = os.path.splitext(filename)
-            i = 1
-            while os.path.exists(os.path.join(real_dir, f"{base}_{i}{ext}")):
-                i += 1
-            filename = f"{base}_{i}{ext}"
+
+        # 判断是否有有效的相对路径（目录上传模式）
+        rel = None
+        if rel_paths and idx < len(rel_paths) and rel_paths[idx]:
+            rel = rel_paths[idx].replace("\\", "/")
+
+        if rel:
+            # ── 目录上传模式：保留相对路径结构 ──
+            parts = rel.split("/")
+            # 安全检查第一道：拒绝含 .. 的路径段，以及 ~ 单独作为路径段（Unix home 目录展开）
+            if ".." in parts or "~" in parts:
+                errors.append(f"{rel}: path traversal rejected")
+                continue
+            dest = os.path.normpath(os.path.join(real_dir, rel))
+            # 安全检查第二道：realpath 验证不逃逸目标目录
+            real_dest = os.path.realpath(dest)
+            if sys.platform == "win32":
+                real_dest_cmp = real_dest.lower()
+                real_dir_cmp = real_dir_abs.lower()
+            else:
+                real_dest_cmp = real_dest
+                real_dir_cmp = real_dir_abs
+            dir_prefix = real_dir_cmp.rstrip(os.sep) + os.sep
+            if not real_dest_cmp.startswith(dir_prefix):
+                errors.append(f"{rel}: {_api_t('upload_path_traversal')}")
+                continue
+            # 确保父目录存在
+            parent = os.path.dirname(dest)
+            if parent not in created_dirs and not os.path.isdir(parent):
+                os.makedirs(parent, exist_ok=True)
+                created_dirs.add(parent)
+            filename = rel
+            # 目录上传模式下也应用冲突策略
+            if os.path.exists(dest):
+                if conflict == "skip":
+                    skipped.append(filename)
+                    continue
+                elif conflict == "rename":
+                    base, ext = os.path.splitext(dest)
+                    i = 1
+                    while os.path.exists(f"{base}_{i}{ext}"):
+                        i += 1
+                    dest = f"{base}_{i}{ext}"
+                    filename = os.path.relpath(dest, real_dir).replace("\\", "/")
+                # "overwrite": 直接覆盖（保存时自然覆盖）
+        else:
+            # ── 普通文件上传模式 ──
+            filename = os.path.basename(f.filename)
             dest = os.path.join(real_dir, filename)
+            if os.path.exists(dest):
+                if conflict == "skip":
+                    skipped.append(filename)
+                    continue
+                elif conflict == "rename":
+                    base, ext = os.path.splitext(filename)
+                    i = 1
+                    while os.path.exists(os.path.join(real_dir, f"{base}_{i}{ext}")):
+                        i += 1
+                    filename = f"{base}_{i}{ext}"
+                    dest = os.path.join(real_dir, filename)
+                # "overwrite": 直接覆盖（保存时自然覆盖）
+
         try:
             f.save(dest)
             saved.append(filename)
@@ -1627,7 +1718,392 @@ def api_upload():
         except Exception as e:
             errors.append(f"{f.filename}: {str(e)}")
 
-    return jsonify({"saved": saved, "errors": errors, "count": len(saved)})
+    return jsonify({"saved": saved, "skipped": skipped, "errors": errors, "count": len(saved)})
+
+
+# ════════════════════════════════════════════════════════════
+# 分片断点续传 API
+# ════════════════════════════════════════════════════════════
+
+def _cleanup_expired_uploads():
+    """清理过期的上传会话及其临时文件（惰性调用）。"""
+    now = time.time()
+    expired = []
+    with _upload_sessions_lock:
+        for uid, info in _upload_sessions.items():
+            if now - info["created"] > _UPLOAD_SESSION_EXPIRY:
+                expired.append(uid)
+        for uid in expired:
+            info = _upload_sessions.pop(uid, None)
+            if info:
+                tmp = info.get("tmp_path", "")
+                if tmp and os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+
+
+@app.route("/api/upload-init", methods=["POST"])
+@require_auth
+@require_writable
+def api_upload_init():
+    """
+    初始化分片上传会话。
+
+    请求体 (JSON):
+        path (str):         目标目录路径
+        filename (str):     文件名
+        size (int):         文件总大小（字节）
+        relativePath (str): 相对路径（目录上传时使用）
+        conflict (str):     冲突策略 "overwrite"|"rename"|"skip"
+    """
+    data = request.get_json(force=True)
+    target_dir = data.get("path", "")
+    filename = data.get("filename", "")
+    total_size = data.get("size", 0)
+    relative_path = data.get("relativePath", "")
+    conflict = data.get("conflict", "rename")
+
+    real_dir = safe_path(target_dir)
+    if real_dir is None or not os.path.isdir(real_dir):
+        return jsonify({"error": _api_t("target_dir_not_found")}), 404
+    if not filename:
+        return jsonify({"error": _api_t("filename_empty")}), 400
+
+    real_dir_abs = os.path.realpath(real_dir)
+
+    # 确定目标路径（与 api_upload 逻辑一致）
+    if relative_path:
+        rel = relative_path.replace("\\", "/")
+        parts = rel.split("/")
+        if ".." in parts or "~" in parts:
+            return jsonify({"error": _api_t("upload_path_traversal")}), 400
+        dest = os.path.normpath(os.path.join(real_dir, rel))
+        real_dest = os.path.realpath(dest)
+        if sys.platform == "win32":
+            dir_prefix = real_dir_abs.lower().rstrip(os.sep) + os.sep
+            if not real_dest.lower().startswith(dir_prefix):
+                return jsonify({"error": _api_t("upload_path_traversal")}), 400
+        else:
+            dir_prefix = real_dir_abs.rstrip(os.sep) + os.sep
+            if not real_dest.startswith(dir_prefix):
+                return jsonify({"error": _api_t("upload_path_traversal")}), 400
+        parent = os.path.dirname(dest)
+        if not os.path.isdir(parent):
+            os.makedirs(parent, exist_ok=True)
+        dest_filename = rel
+    else:
+        dest = os.path.join(real_dir, os.path.basename(filename))
+        dest_filename = os.path.basename(filename)
+
+    # 冲突处理
+    if os.path.exists(dest):
+        if conflict == "skip":
+            return jsonify({"skipped": True, "dest_filename": dest_filename})
+        elif conflict == "rename":
+            base, ext = os.path.splitext(dest)
+            i = 1
+            while os.path.exists(f"{base}_{i}{ext}"):
+                i += 1
+            dest = f"{base}_{i}{ext}"
+            if relative_path:
+                dest_filename = os.path.relpath(dest, real_dir).replace("\\", "/")
+            else:
+                dest_filename = os.path.basename(dest)
+        # "overwrite": 不改名，完成时覆盖
+
+    # 检查是否存在可恢复的同目标会话
+    with _upload_sessions_lock:
+        for uid, info in list(_upload_sessions.items()):
+            if info["dest"] == dest and info["total_size"] == total_size:
+                uploaded = 0
+                tmp = info.get("tmp_path", "")
+                if tmp and os.path.exists(tmp):
+                    uploaded = os.path.getsize(tmp)
+                info["uploaded_bytes"] = uploaded
+                return jsonify({
+                    "upload_id": uid,
+                    "chunk_size": _CHUNK_SIZE,
+                    "uploaded_bytes": uploaded,
+                    "dest_filename": info["dest_filename"],
+                    "resumed": True,
+                })
+
+    # 惰性清理过期会话
+    _cleanup_expired_uploads()
+
+    # 创建临时目录和文件
+    os.makedirs(_UPLOAD_TMP_DIR, exist_ok=True)
+    upload_id = secrets.token_urlsafe(16)
+    tmp_path = os.path.join(_UPLOAD_TMP_DIR, upload_id + ".part")
+    with open(tmp_path, "wb"):
+        pass  # 创建空文件
+
+    with _upload_sessions_lock:
+        _upload_sessions[upload_id] = {
+            "tmp_path": tmp_path,
+            "dest": dest,
+            "dest_filename": dest_filename,
+            "total_size": total_size,
+            "uploaded_bytes": 0,
+            "created": time.time(),
+            "target_dir": real_dir,
+        }
+
+    return jsonify({
+        "upload_id": upload_id,
+        "chunk_size": _CHUNK_SIZE,
+        "uploaded_bytes": 0,
+        "dest_filename": dest_filename,
+    })
+
+
+@app.route("/api/upload-chunk", methods=["POST"])
+@require_auth
+@require_writable
+def api_upload_chunk():
+    """
+    上传单个分片。
+
+    表单字段:
+        upload_id (str): 上传会话 ID
+        offset (int):    本分片在文件中的字节偏移
+        chunk (file):    分片二进制数据
+    """
+    upload_id = request.form.get("upload_id", "")
+    offset = int(request.form.get("offset", 0))
+
+    with _upload_sessions_lock:
+        session = _upload_sessions.get(upload_id)
+    if not session:
+        return jsonify({"error": _api_t("upload_session_expired")}), 404
+
+    chunk = request.files.get("chunk")
+    if not chunk:
+        return jsonify({"error": _api_t("upload_no_chunk")}), 400
+
+    tmp_path = session["tmp_path"]
+    chunk_data = chunk.read()
+
+    try:
+        with open(tmp_path, "r+b" if os.path.getsize(tmp_path) > 0 else "wb") as f:
+            f.seek(offset)
+            f.write(chunk_data)
+        new_offset = offset + len(chunk_data)
+        with _upload_sessions_lock:
+            if upload_id in _upload_sessions:
+                _upload_sessions[upload_id]["uploaded_bytes"] = new_offset
+        return jsonify({"uploaded_bytes": new_offset})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/upload-complete", methods=["POST"])
+@require_auth
+@require_writable
+def api_upload_complete():
+    """
+    完成分片上传 — 将临时文件移动到最终位置。
+
+    请求体 (JSON):
+        upload_id (str): 上传会话 ID
+    """
+    data = request.get_json(force=True)
+    upload_id = data.get("upload_id", "")
+
+    with _upload_sessions_lock:
+        session = _upload_sessions.pop(upload_id, None)
+    if not session:
+        return jsonify({"error": _api_t("upload_session_expired")}), 404
+
+    tmp_path = session["tmp_path"]
+    dest = session["dest"]
+
+    if not os.path.exists(tmp_path):
+        return jsonify({"error": _api_t("upload_temp_missing")}), 500
+
+    try:
+        parent = os.path.dirname(dest)
+        if not os.path.isdir(parent):
+            os.makedirs(parent, exist_ok=True)
+        if os.path.exists(dest):
+            os.remove(dest)
+        shutil.move(tmp_path, dest)
+        log_access("UPLOAD", dest)
+        return jsonify({
+            "ok": True,
+            "filename": session["dest_filename"],
+            "size": session["total_size"],
+        })
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/upload-cancel", methods=["POST"])
+@require_auth
+def api_upload_cancel():
+    """
+    取消分片上传 — 删除临时文件和会话。
+
+    请求体 (JSON):
+        upload_id (str): 上传会话 ID
+    """
+    data = request.get_json(force=True)
+    upload_id = data.get("upload_id", "")
+
+    with _upload_sessions_lock:
+        session = _upload_sessions.pop(upload_id, None)
+    if not session:
+        return jsonify({"error": _api_t("upload_session_expired")}), 404
+
+    tmp_path = session["tmp_path"]
+    if os.path.exists(tmp_path):
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+    return jsonify({"ok": True})
+
+
+@app.route("/api/upload-status", methods=["GET"])
+@require_auth
+def api_upload_status():
+    """
+    查询分片上传进度。
+
+    查询参数:
+        upload_id (str): 上传会话 ID
+    """
+    upload_id = request.args.get("upload_id", "")
+
+    with _upload_sessions_lock:
+        session = _upload_sessions.get(upload_id)
+    if not session:
+        return jsonify({"error": _api_t("upload_session_expired")}), 404
+
+    uploaded = 0
+    tmp = session.get("tmp_path", "")
+    if tmp and os.path.exists(tmp):
+        uploaded = os.path.getsize(tmp)
+
+    return jsonify({
+        "upload_id": upload_id,
+        "uploaded_bytes": uploaded,
+        "total_size": session["total_size"],
+        "filename": session["dest_filename"],
+    })
+
+
+# ════════════════════════════════════════════════════════════
+# 文件操作流式进度辅助函数
+# ════════════════════════════════════════════════════════════
+
+_OP_CHUNK = 1024 * 1024          # 复制分块大小 1MB
+_OP_PROGRESS_INTERVAL = 0.15     # 进度更新最小间隔（秒）
+
+
+def _stream_response(gen):
+    """将生成器包装为 NDJSON 流式响应（每行一个 JSON 对象）。"""
+    def generate():
+        try:
+            for update in gen:
+                yield json.dumps(update, ensure_ascii=False) + "\n"
+        except Exception as e:
+            yield json.dumps({"error": str(e)}) + "\n"
+    return Response(stream_with_context(generate()), mimetype='text/x-ndjson',
+                    headers={'X-Accel-Buffering': 'no', 'Cache-Control': 'no-cache'})
+
+
+def _copy_file_progress(src, dest):
+    """分块复制单个文件，yield 字节级进度。"""
+    total = os.path.getsize(src)
+    copied = 0
+    last_t = 0
+    with open(src, 'rb') as fs, open(dest, 'wb') as fd:
+        while True:
+            buf = fs.read(_OP_CHUNK)
+            if not buf:
+                break
+            fd.write(buf)
+            copied += len(buf)
+            now = time.time()
+            if now - last_t >= _OP_PROGRESS_INTERVAL or copied == total:
+                yield {"p": copied, "t": total}
+                last_t = now
+    shutil.copystat(src, dest)
+
+
+def _copytree_progress(src, dest):
+    """递归复制目录树，yield 字节级进度。"""
+    total_size = 0
+    file_list = []
+    for root, _dirs, files in os.walk(src):
+        for fname in files:
+            fp = os.path.join(root, fname)
+            try:
+                sz = os.path.getsize(fp)
+                total_size += sz
+                file_list.append((fp, sz))
+            except OSError:
+                pass
+    copied_total = 0
+    for fp, sz in file_list:
+        rel = os.path.relpath(fp, src)
+        dest_fp = os.path.join(dest, rel)
+        os.makedirs(os.path.dirname(dest_fp), exist_ok=True)
+        for prog in _copy_file_progress(fp, dest_fp):
+            yield {"p": copied_total + prog["p"], "t": total_size, "f": rel}
+        copied_total += sz
+    for root, dirs, _ in os.walk(src):
+        for d in dirs:
+            src_d = os.path.join(root, d)
+            dest_d = os.path.join(dest, os.path.relpath(src_d, src))
+            if os.path.isdir(dest_d):
+                try:
+                    shutil.copystat(src_d, dest_d)
+                except OSError:
+                    pass
+    try:
+        shutil.copystat(src, dest)
+    except OSError:
+        pass
+
+
+def _rmtree_progress(path):
+    """递归删除目录树，yield 文件级进度。"""
+    file_list = []
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            file_list.append(os.path.join(root, f))
+    total = len(file_list)
+    deleted = 0
+    last_t = 0
+    for fp in file_list:
+        try:
+            os.remove(fp)
+        except OSError:
+            pass
+        deleted += 1
+        now = time.time()
+        if now - last_t >= _OP_PROGRESS_INTERVAL or deleted == total:
+            yield {"p": deleted, "t": total, "f": os.path.basename(fp)}
+            last_t = now
+    for root, dirs, _ in os.walk(path, topdown=False):
+        for d in dirs:
+            try:
+                os.rmdir(os.path.join(root, d))
+            except OSError:
+                pass
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
 
 
 @app.route("/api/mkdir", methods=["POST"])
@@ -1734,6 +2210,7 @@ def api_delete():
     if os.path.normpath(real).lower() in _PROTECTED_PATHS:
         return jsonify({"error": _api_t("protected_sys_dir")}), 403
 
+    use_stream = data.get("stream", False)
     try:
         if os.path.isfile(real):
             os.remove(real)
@@ -1741,10 +2218,16 @@ def api_delete():
             return jsonify({"ok": True})
         elif os.path.isdir(real):
             if os.listdir(real) and not recursive:
-                # 非空且未要求递归，返回特殊错误码让前端弹二次确认
                 return jsonify({"error": _api_t("dir_not_empty"), "not_empty": True}), 400
             if recursive:
-                shutil.rmtree(real)
+                if use_stream:
+                    def _gen():
+                        yield from _rmtree_progress(real)
+                        log_access("DELETE_RECURSIVE", real)
+                        yield {"ok": True}
+                    return _stream_response(_gen())
+                else:
+                    shutil.rmtree(real)
             else:
                 os.rmdir(real)
             log_access("DELETE" + ("_RECURSIVE" if recursive else ""), real)
@@ -1912,12 +2395,17 @@ def api_copy():
     """
     复制文件或文件夹到目标目录。
 
-    请求体: {"src": "源路径", "dest_dir": "目标目录"}
-    同名冲突时自动加数字后缀。
+    请求体: {"src": "源路径", "dest_dir": "目标目录", "conflict": "overwrite|rename|skip"}
+    conflict 参数:
+      - 不传: 同名冲突时返回 409 + {"conflict": true, "name": "..."} 由前端弹窗让用户选择
+      - "overwrite": 覆盖已有文件/文件夹
+      - "rename": 自动重命名（保留两者）
+      - "skip": 跳过，不执行复制
     """
     data = request.get_json(silent=True) or {}
     src_raw = data.get("src", "")
     dest_dir_raw = data.get("dest_dir", "")
+    conflict = data.get("conflict", "")
 
     src = safe_path(src_raw)
     if src is None:
@@ -1930,27 +2418,72 @@ def api_copy():
     name = os.path.basename(src)
     dest = os.path.join(dest_dir, name)
 
-    # 同名冲突处理（文件用 splitext 保留扩展名，文件夹直接在末尾加后缀）
+    # 同名冲突处理
     if os.path.exists(dest):
-        i = 1
-        if os.path.isfile(src):
-            base, ext = os.path.splitext(name)
-            while os.path.exists(os.path.join(dest_dir, f"{base}_copy{i}{ext}")):
-                i += 1
-            name = f"{base}_copy{i}{ext}"
+        # 源和目标是同一路径（复制到自身所在目录）：覆盖无意义，只允许 rename 和 skip
+        src_real_path = os.path.realpath(src)
+        dest_real_path = os.path.realpath(dest)
+        if src_real_path == dest_real_path:
+            if conflict == "rename":
+                i = 1
+                if os.path.isfile(src):
+                    base, ext = os.path.splitext(name)
+                    while os.path.exists(os.path.join(dest_dir, f"{base}_copy{i}{ext}")):
+                        i += 1
+                    name = f"{base}_copy{i}{ext}"
+                else:
+                    while os.path.exists(os.path.join(dest_dir, f"{name}_copy{i}")):
+                        i += 1
+                    name = f"{name}_copy{i}"
+                dest = os.path.join(dest_dir, name)
+            elif conflict == "skip" or conflict == "overwrite":
+                return jsonify({"ok": True, "skipped": True, "dest": dest.replace("\\", "/")})
+            else:
+                return jsonify({"error": _api_t("dest_name_conflict"), "conflict": True, "name": name}), 409
+        elif conflict == "skip":
+            return jsonify({"ok": True, "skipped": True, "dest": dest.replace("\\", "/")})
+        elif conflict == "overwrite":
+            try:
+                if os.path.isdir(dest):
+                    shutil.rmtree(dest)
+                else:
+                    os.remove(dest)
+            except PermissionError:
+                return jsonify({"error": _api_t("no_permission")}), 403
+        elif conflict == "rename":
+            i = 1
+            if os.path.isfile(src):
+                base, ext = os.path.splitext(name)
+                while os.path.exists(os.path.join(dest_dir, f"{base}_copy{i}{ext}")):
+                    i += 1
+                name = f"{base}_copy{i}{ext}"
+            else:
+                while os.path.exists(os.path.join(dest_dir, f"{name}_copy{i}")):
+                    i += 1
+                name = f"{name}_copy{i}"
+            dest = os.path.join(dest_dir, name)
         else:
-            while os.path.exists(os.path.join(dest_dir, f"{name}_copy{i}")):
-                i += 1
-            name = f"{name}_copy{i}"
-        dest = os.path.join(dest_dir, name)
+            # 未指定冲突处理方式：返回 409 让前端弹窗
+            return jsonify({"error": _api_t("dest_name_conflict"), "conflict": True, "name": name}), 409
 
+    use_stream = data.get("stream", False)
     try:
-        if os.path.isfile(src):
-            shutil.copy2(src, dest)
+        if use_stream:
+            def _gen():
+                if os.path.isfile(src):
+                    yield from _copy_file_progress(src, dest)
+                else:
+                    yield from _copytree_progress(src, dest)
+                log_access("COPY", f"{src} -> {dest}")
+                yield {"ok": True, "dest": dest.replace("\\", "/")}
+            return _stream_response(_gen())
         else:
-            shutil.copytree(src, dest)
-        log_access("COPY", f"{src} -> {dest}")
-        return jsonify({"ok": True, "dest": dest.replace("\\", "/")})
+            if os.path.isfile(src):
+                shutil.copy2(src, dest)
+            else:
+                shutil.copytree(src, dest)
+            log_access("COPY", f"{src} -> {dest}")
+            return jsonify({"ok": True, "dest": dest.replace("\\", "/")})
     except PermissionError:
         return jsonify({"error": _api_t("no_permission")}), 403
     except Exception as e:
@@ -1965,11 +2498,17 @@ def api_move():
     """
     移动文件或文件夹到目标目录。
 
-    请求体: {"src": "源路径", "dest_dir": "目标目录"}
+    请求体: {"src": "源路径", "dest_dir": "目标目录", "conflict": "overwrite|rename|skip"}
+    conflict 参数:
+      - 不传: 同名冲突时返回 409 + {"conflict": true, "name": "..."} 由前端弹窗让用户选择
+      - "overwrite": 覆盖已有文件/文件夹
+      - "rename": 自动重命名（保留两者）
+      - "skip": 跳过，不执行移动
     """
     data = request.get_json(silent=True) or {}
     src_raw = data.get("src", "")
     dest_dir_raw = data.get("dest_dir", "")
+    conflict = data.get("conflict", "")
 
     src = safe_path(src_raw)
     if src is None:
@@ -1992,13 +2531,79 @@ def api_move():
     name = os.path.basename(src)
     dest = os.path.join(dest_dir, name)
 
+    # 同名冲突处理
     if os.path.exists(dest):
-        return jsonify({"error": _api_t("dest_name_conflict")}), 409
+        # 源和目标是同一路径（移动到自身所在目录）：无法覆盖自己，只允许 rename 和 skip
+        src_real_path = os.path.realpath(src)
+        dest_real_path = os.path.realpath(dest)
+        if src_real_path == dest_real_path:
+            if conflict == "rename":
+                i = 1
+                if os.path.isfile(src):
+                    base, ext = os.path.splitext(name)
+                    while os.path.exists(os.path.join(dest_dir, f"{base}_copy{i}{ext}")):
+                        i += 1
+                    name = f"{base}_copy{i}{ext}"
+                else:
+                    while os.path.exists(os.path.join(dest_dir, f"{name}_copy{i}")):
+                        i += 1
+                    name = f"{name}_copy{i}"
+                dest = os.path.join(dest_dir, name)
+            elif conflict == "skip" or conflict == "overwrite":
+                return jsonify({"ok": True, "skipped": True, "dest": dest.replace("\\", "/")})
+            else:
+                return jsonify({"error": _api_t("dest_name_conflict"), "conflict": True, "name": name}), 409
+        elif conflict == "skip":
+            return jsonify({"ok": True, "skipped": True, "dest": dest.replace("\\", "/")})
+        elif conflict == "overwrite":
+            try:
+                if os.path.isdir(dest):
+                    shutil.rmtree(dest)
+                else:
+                    os.remove(dest)
+            except PermissionError:
+                return jsonify({"error": _api_t("no_permission")}), 403
+        elif conflict == "rename":
+            i = 1
+            if os.path.isfile(src):
+                base, ext = os.path.splitext(name)
+                while os.path.exists(os.path.join(dest_dir, f"{base}_copy{i}{ext}")):
+                    i += 1
+                name = f"{base}_copy{i}{ext}"
+            else:
+                while os.path.exists(os.path.join(dest_dir, f"{name}_copy{i}")):
+                    i += 1
+                name = f"{name}_copy{i}"
+            dest = os.path.join(dest_dir, name)
+        else:
+            # 未指定冲突处理方式：返回 409 让前端弹窗
+            return jsonify({"error": _api_t("dest_name_conflict"), "conflict": True, "name": name}), 409
 
+    use_stream = data.get("stream", False)
     try:
-        shutil.move(src, dest)
-        log_access("MOVE", f"{src} -> {dest}")
-        return jsonify({"ok": True, "dest": dest.replace("\\", "/")})
+        if use_stream:
+            # 流式模式：先尝试 rename（同分区瞬时），失败则分块复制+删源
+            def _gen():
+                try:
+                    os.rename(src, dest)
+                    log_access("MOVE", f"{src} -> {dest}")
+                    yield {"ok": True, "dest": dest.replace("\\", "/")}
+                    return
+                except OSError:
+                    pass
+                if os.path.isfile(src):
+                    yield from _copy_file_progress(src, dest)
+                    os.remove(src)
+                else:
+                    yield from _copytree_progress(src, dest)
+                    shutil.rmtree(src)
+                log_access("MOVE", f"{src} -> {dest}")
+                yield {"ok": True, "dest": dest.replace("\\", "/")}
+            return _stream_response(_gen())
+        else:
+            shutil.move(src, dest)
+            log_access("MOVE", f"{src} -> {dest}")
+            return jsonify({"ok": True, "dest": dest.replace("\\", "/")})
     except PermissionError:
         return jsonify({"error": _api_t("no_permission")}), 403
     except Exception as e:
@@ -2097,11 +2702,17 @@ def api_extract():
     """
     将 ZIP 文件解压到指定目录。
 
-    请求体: {"path": "zip路径", "dest_dir": "解压目标目录"}
+    请求体: {"path": "zip路径", "dest_dir": "解压目标目录", "conflict": "overwrite|rename|skip"}
+    conflict 参数:
+      - 不传: 有冲突时返回 409 + {"conflict": true, "files": [...]} 由前端弹窗让用户选择
+      - "overwrite": 覆盖已有文件（默认 extractall 行为）
+      - "rename": 冲突文件自动重命名
+      - "skip": 跳过已存在的文件
     """
     data = request.get_json(silent=True) or {}
     raw = data.get("path", "")
     dest_dir_raw = data.get("dest_dir", "")
+    conflict = data.get("conflict", "")
 
     real = safe_path(raw)
     if real is None or not os.path.isfile(real):
@@ -2115,12 +2726,98 @@ def api_extract():
         dest_abs = os.path.realpath(dest_dir)
         dest_prefix = dest_abs.rstrip(os.sep) + os.sep
         with zipfile.ZipFile(real, 'r') as zf:
+            # 安全检查：防止 Zip Slip
             for member in zf.infolist():
-                # 防止 Zip Slip：确保解压路径不超出目标目录
                 member_path = os.path.realpath(os.path.join(dest_abs, member.filename))
                 if not member_path.startswith(dest_prefix) and member_path != dest_abs:
                     return jsonify({"error": f"{_api_t('zip_illegal_path')}: {member.filename}"}), 400
-            zf.extractall(dest_dir)
+
+            # 检测冲突文件
+            conflicts = []
+            for member in zf.infolist():
+                if member.is_dir():
+                    continue
+                member_path = os.path.join(dest_abs, member.filename)
+                if os.path.exists(member_path):
+                    conflicts.append(member.filename)
+
+            if conflicts and not conflict:
+                # 有冲突且未指定处理方式：返回 409 让前端弹窗
+                return jsonify({
+                    "error": _api_t("dest_name_conflict"),
+                    "conflict": True,
+                    "files": conflicts[:20],
+                    "total": len(conflicts),
+                }), 409
+
+            use_stream = data.get("stream", False)
+            members = [m for m in zf.infolist() if not m.is_dir()]
+            total_members = len(members)
+
+            if use_stream:
+                # 注意：生成器在 with zf 块退出后才被消费，因此需要
+                # 在 _gen 内部自行打开 zip 文件，否则 zf 已关闭。
+                _zip_path = real
+                _dest_abs = dest_abs
+                _conflict = conflict
+                _total = total_members
+                def _gen():
+                    with zipfile.ZipFile(_zip_path, 'r') as zf2:
+                        extracted = 0
+                        last_t = 0
+                        for member in zf2.infolist():
+                            member_path = os.path.join(_dest_abs, member.filename)
+                            if member.is_dir():
+                                os.makedirs(member_path, exist_ok=True)
+                                continue
+                            parent = os.path.dirname(member_path)
+                            if not os.path.isdir(parent):
+                                os.makedirs(parent, exist_ok=True)
+                            if os.path.exists(member_path):
+                                if _conflict == "skip":
+                                    extracted += 1
+                                    continue
+                                elif _conflict == "rename":
+                                    base, ext = os.path.splitext(member_path)
+                                    i = 1
+                                    while os.path.exists(f"{base}_{i}{ext}"):
+                                        i += 1
+                                    member_path = f"{base}_{i}{ext}"
+                                # overwrite: 直接覆盖
+                            with zf2.open(member) as src_f, open(member_path, 'wb') as dst_f:
+                                shutil.copyfileobj(src_f, dst_f)
+                            extracted += 1
+                            now = time.time()
+                            if now - last_t >= _OP_PROGRESS_INTERVAL or extracted == _total:
+                                yield {"p": extracted, "t": _total, "f": member.filename}
+                                last_t = now
+                    log_access("EXTRACT", f"{_zip_path} -> {dest_dir}")
+                    yield {"ok": True}
+                return _stream_response(_gen())
+            else:
+                if conflict == "overwrite" or not conflicts:
+                    zf.extractall(dest_dir)
+                else:
+                    for member in zf.infolist():
+                        member_path = os.path.join(dest_abs, member.filename)
+                        if member.is_dir():
+                            os.makedirs(member_path, exist_ok=True)
+                            continue
+                        parent = os.path.dirname(member_path)
+                        if not os.path.isdir(parent):
+                            os.makedirs(parent, exist_ok=True)
+                        if os.path.exists(member_path):
+                            if conflict == "skip":
+                                continue
+                            elif conflict == "rename":
+                                base, ext = os.path.splitext(member_path)
+                                i = 1
+                                while os.path.exists(f"{base}_{i}{ext}"):
+                                    i += 1
+                                member_path = f"{base}_{i}{ext}"
+                        with zf.open(member) as src_f, open(member_path, 'wb') as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+
         log_access("EXTRACT", f"{real} -> {dest_dir}")
         return jsonify({"ok": True})
     except zipfile.BadZipFile:
@@ -2277,6 +2974,18 @@ HTML_TEMPLATE = r"""
 .upload-progress-text{font-size:12px;color:var(--text2);margin-top:4px;text-align:center}
 #dragUploadToast{display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 20px;z-index:900;min-width:280px;box-shadow:0 4px 12px rgba(0,0,0,0.3)}
 #dragUploadToast .upload-progress-text{margin-top:2px}
+/* ── 上传队列 ── */
+.uq-wrap{max-height:60vh;display:flex;flex-direction:column}
+.uq-list{flex:1;overflow-y:auto;max-height:40vh;margin-top:8px;border:1px solid var(--border);border-radius:var(--radius);padding:4px}
+.uq-item{display:flex;align-items:center;gap:6px;padding:4px 8px;font-size:13px;border-radius:4px;flex-wrap:wrap}
+.uq-item.uq-active{background:rgba(99,102,241,0.1)}
+.uq-item.uq-done{color:var(--text2)}.uq-item.uq-fail{color:#ef4444}
+.uq-item.uq-skip{color:var(--text2);opacity:0.6}
+.uq-icon{width:16px;text-align:center;flex-shrink:0}
+.uq-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.uq-size{flex-shrink:0;color:var(--text2);font-size:12px}
+.uq-fbar{width:100%;height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+.uq-ffill{height:100%;background:var(--accent);border-radius:2px;transition:width .15s}
 /* ── 网格视图 ── */
 #content.grid-view{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;padding:8px 0}
 #content.grid-view .file-item{flex-direction:column;align-items:center;padding:14px 8px;gap:6px;text-align:center;border-radius:12px;height:auto}
@@ -2836,7 +3545,7 @@ function renderFileList(items){
     }).join("");
 }
 function onItemClick(e,path,isDir,name,type){
-    if(selectMode&&!isDir){toggleSelect(path,e.currentTarget);return}
+    if(selectMode){toggleSelect(path,e.currentTarget);return}
     if(isDir)loadPath(path);
     else previewFile(path,name,type);
 }
@@ -2934,17 +3643,16 @@ function toggleSelect(path,el){
 }
 function toggleSelectAll(){
     const items=document.querySelectorAll("#content .file-item");
-    // 收集所有可选文件（非目录）
-    const filePaths=[];
+    // 收集所有可选项（文件和文件夹）
+    const allItems=[];
     items.forEach(el=>{
         const path=el.getAttribute("data-path");
-        const isDir=el.getAttribute("data-isdir")==="true";
-        if(path&&!isDir)filePaths.push({path,el});
+        if(path)allItems.push({path,el});
     });
-    if(!filePaths.length)return;
-    // 判断当前是全选还是取消全选：如果所有文件都已选中则取消
-    const allSelected=filePaths.every(f=>selectedPaths.has(f.path));
-    filePaths.forEach(f=>{
+    if(!allItems.length)return;
+    // 判断当前是全选还是取消全选：如果所有项都已选中则取消
+    const allSelected=allItems.every(f=>selectedPaths.has(f.path));
+    allItems.forEach(f=>{
         if(allSelected){
             selectedPaths.delete(f.path);f.el.classList.remove("selected");
             const chk=f.el.querySelector(".file-check");if(chk)chk.classList.remove("checked");
@@ -2957,17 +3665,25 @@ function toggleSelectAll(){
 }
 async function batchDownload(){
     if(!selectedPaths.size){toast(t("selectFirst"));return}
-    toast(t("packing"));
+    showOpProgress(t("packingDl"),true);
     try{
         const r=await fetch("/api/batch-download",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths:[...selectedPaths]})});
-        if(!r.ok){const d=await r.json();toast(d.error||t("packFail"));return}
-        const blob=await r.blob();
+        if(!r.ok){closeDialog();const d=await r.json();toast(d.error||t("packFail"));return}
+        const total=parseInt(r.headers.get("Content-Length")||"0",10);
+        const reader=r.body.getReader();const chunks=[];let loaded=0;
+        while(true){
+            const{done,value}=await reader.read();if(done)break;
+            chunks.push(value);loaded+=value.length;
+            if(total>0)updateOpProgress({p:loaded,t:total});
+        }
+        closeDialog();
+        const blob=new Blob(chunks,{type:"application/zip"});
         const a=document.createElement("a");
         a.href=URL.createObjectURL(blob);
         a.download=r.headers.get("Content-Disposition")?.match(/filename="?(.+)"?/)?.[1]||"files.zip";
         a.click();URL.revokeObjectURL(a.href);
         toast(t("dlStarted"));
-    }catch(e){toast(t("packDlFail"))}
+    }catch(e){closeDialog();toast(t("packDlFail"))}
 }
 
 // ═══ Batch Delete ═══
@@ -2984,12 +3700,16 @@ function batchDelete(){
     </div>`);
 }
 async function doBatchDelete(){
-    let ok=0,fail=0;
-    for(const path of selectedPaths){
+    const paths=[...selectedPaths];const total=paths.length;let ok=0,fail=0;
+    showOpProgress(t("opDeleting"),false);
+    for(let i=0;i<paths.length;i++){
         try{
-            const r=await fetch("/api/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path,recursive:true})}).then(r=>r.json());
-            if(r.ok)ok++;else fail++;
+            const d=await streamOp("/api/delete",{path:paths[i],recursive:true},(prog)=>{
+                updateOpProgress({p:prog.p,t:prog.t,f:`[${i+1}/${total}] ${prog.f||""}`});
+            });
+            if(d.ok)ok++;else fail++;
         }catch(e){fail++}
+        updateOpProgress({p:i+1,t:total,f:""});
     }
     closeDialog();
     toast(`${t("batchDelDone")} ${ok}${fail?`, ${fail} ${t("batchFail")}`:""}`);
@@ -3002,14 +3722,28 @@ async function doBatchDelete(){
 function batchMove(){
     if(!selectedPaths.size){toast(t("selectFirst"));return}
     openDirPicker(`${t("batchMoveTitle")} ${selectedPaths.size} ${t("batchMoveUnit")}`,currentPath,async(destDir)=>{
-        let ok=0,fail=0;
-        for(const path of selectedPaths){
+        let ok=0,fail=0,skipped=0,batchMode=null;
+        const paths=[...selectedPaths];const total=paths.length;
+        showOpProgress(t("opMoving"),true);
+        for(let i=0;i<paths.length;i++){
+            const name=paths[i].split("/").pop();
             try{
-                const r=await fetch("/api/move",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({src:path,dest_dir:destDir})}).then(r=>r.json());
-                if(r.ok)ok++;else fail++;
+                const body={src:paths[i],dest_dir:destDir};
+                let d=await streamOp("/api/move",body,(prog)=>{updateOpProgress({p:prog.p,t:prog.t,f:`[${i+1}/${total}] ${prog.f||name}`})});
+                if(d.ok){if(d.skipped)skipped++;else ok++;continue}
+                if(d.conflict){
+                    const mode=batchMode||await new Promise(resolve=>{
+                        showConflictDialog(d.name,true,(choice,applyAll)=>{if(applyAll)batchMode=choice;resolve(choice)});
+                    });
+                    body.conflict=mode;
+                    showOpProgress(t("opMoving"),true);
+                    d=await streamOp("/api/move",body,(prog)=>{updateOpProgress({p:prog.p,t:prog.t,f:`[${i+1}/${total}] ${prog.f||name}`})});
+                    if(d.ok){if(d.skipped)skipped++;else ok++}else fail++;
+                }else fail++;
             }catch(e){fail++}
         }
-        toast(`${t("batchMoveDone")} ${ok}${fail?`, ${fail} ${t("batchFail")}`:""}`);
+        closeDialog();
+        toast(`${t("batchMoveDone")} ${ok}${skipped?`, ${skipped} ${t("conflictSkip")}`:""} ${fail?`, ${fail} ${t("batchFail")}`:""}`);
         selectedPaths.clear();
         updateBatchBtnCount();
         fetchList(currentPath);
@@ -3020,62 +3754,204 @@ function batchMove(){
 function batchCopy(){
     if(!selectedPaths.size){toast(t("selectFirst"));return}
     openDirPicker(`${t("batchCopyTitle")} ${selectedPaths.size} ${t("batchMoveUnit")}`,currentPath,async(destDir)=>{
-        let ok=0,fail=0;
-        for(const path of selectedPaths){
+        let ok=0,fail=0,skipped=0,batchMode=null;
+        const paths=[...selectedPaths];const total=paths.length;
+        showOpProgress(t("opCopying"),true);
+        for(let i=0;i<paths.length;i++){
+            const name=paths[i].split("/").pop();
             try{
-                const r=await fetch("/api/copy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({src:path,dest_dir:destDir})}).then(r=>r.json());
-                if(r.ok)ok++;else fail++;
+                const body={src:paths[i],dest_dir:destDir};
+                let d=await streamOp("/api/copy",body,(prog)=>{updateOpProgress({p:prog.p,t:prog.t,f:`[${i+1}/${total}] ${prog.f||name}`})});
+                if(d.ok){if(d.skipped)skipped++;else ok++;continue}
+                if(d.conflict){
+                    const mode=batchMode||await new Promise(resolve=>{
+                        showConflictDialog(d.name,true,(choice,applyAll)=>{if(applyAll)batchMode=choice;resolve(choice)});
+                    });
+                    body.conflict=mode;
+                    showOpProgress(t("opCopying"),true);
+                    d=await streamOp("/api/copy",body,(prog)=>{updateOpProgress({p:prog.p,t:prog.t,f:`[${i+1}/${total}] ${prog.f||name}`})});
+                    if(d.ok){if(d.skipped)skipped++;else ok++}else fail++;
+                }else fail++;
             }catch(e){fail++}
         }
-        toast(`${t("batchCopyDone")} ${ok}${fail?`, ${fail} ${t("batchFail")}`:""}`);
+        closeDialog();
+        toast(`${t("batchCopyDone")} ${ok}${skipped?`, ${skipped} ${t("conflictSkip")}`:""} ${fail?`, ${fail} ${t("batchFail")}`:""}`);
         selectedPaths.clear();
         updateBatchBtnCount();
         fetchList(currentPath);
     });
 }
 
-// ═══ Upload ═══
+// ═══ Upload (分片断点续传) ═══
+let _uploadMode="files";
+const _CHUNK_THRESHOLD=5*1024*1024;
+let _uq={active:false,paused:false,cancelled:false,abortCtrl:null,files:[],current:-1,totalBytes:0,doneBytes:0,curLoaded:0,mode:"dialog",path:"",conflict:"rename"};
+function _uqReset(){_uq={active:false,paused:false,cancelled:false,abortCtrl:null,files:[],current:-1,totalBytes:0,doneBytes:0,curLoaded:0,mode:"dialog",path:"",conflict:"rename"}}
+function _uqWaitIfPaused(){if(!_uq.paused)return Promise.resolve();return new Promise(r=>{const iv=setInterval(()=>{if(!_uq.paused||_uq.cancelled){clearInterval(iv);r()}},200)})}
+function _uqUpdateUI(){
+    const done=_uq.files.filter(f=>f.status==="done").length;
+    const total=_uq.files.length;
+    const bytesNow=_uq.doneBytes+_uq.curLoaded;
+    const pct=_uq.totalBytes>0?Math.round(bytesNow*100/_uq.totalBytes):0;
+    if(_uq.mode==="dialog"){
+        const bar=document.getElementById("uqBar");
+        const pctEl=document.getElementById("uqPct");
+        const listEl=document.getElementById("uqList");
+        const pauseBtn=document.getElementById("uqPauseBtn");
+        if(bar)bar.style.width=pct+"%";
+        if(pctEl)pctEl.textContent=`${pct}% \u2014 ${done}/${total} ${t("uploadDoneUnit")} (${formatBytes(bytesNow)} / ${formatBytes(_uq.totalBytes)})`;
+        if(pauseBtn)pauseBtn.textContent=_uq.paused?t("uploadResumeBtn"):t("uploadPauseBtn");
+        if(listEl){
+            let html="";
+            for(let i=0;i<_uq.files.length;i++){
+                const f=_uq.files[i];
+                const icon=f.status==="done"?"\u2713":f.status==="uploading"?"\u25b6":f.status==="failed"?"\u2717":f.status==="skipped"?"\u2298":"\u25cb";
+                const cls=f.status==="done"?"uq-done":f.status==="uploading"?"uq-active":f.status==="failed"?"uq-fail":f.status==="skipped"?"uq-skip":"";
+                const name=f.relPath||f.file.name;
+                const size=formatBytes(f.file.size);
+                html+=`<div class="uq-item ${cls}"><span class="uq-icon">${icon}</span><span class="uq-name" title="${eh(name)}">${eh(name)}</span><span class="uq-size">${size}</span>`;
+                if(f.status==="uploading"&&f.file.size>=_CHUNK_THRESHOLD){
+                    const fp=f.file.size>0?Math.round((f.progress||0)*100/f.file.size):0;
+                    html+=`<div class="uq-fbar" style="width:100%"><div class="uq-ffill" style="width:${fp}%"></div></div>`;
+                }
+                html+=`</div>`;
+            }
+            listEl.innerHTML=html;
+            const ac=listEl.querySelector(".uq-active");if(ac)ac.scrollIntoView({block:"nearest"});
+        }
+    }else{
+        const dBar=document.getElementById("dragUploadBar");
+        const dText=document.getElementById("dragUploadText");
+        if(dBar)dBar.style.width=pct+"%";
+        const cn=_uq.current>=0&&_uq.current<_uq.files.length?(_uq.files[_uq.current].relPath||_uq.files[_uq.current].file.name):"";
+        if(dText)dText.textContent=`${t("uploadUploading")} ${done}/${total} \u2014 ${pct}%${cn?" | "+cn:""}`;
+    }
+}
+async function startUploadQueue(fileItems,path,conflict,mode){
+    _uqReset();_uq.active=true;_uq.mode=mode;_uq.path=path;_uq.conflict=conflict;
+    _uq.files=fileItems.map(item=>({file:item.file,relPath:item.relativePath,status:"pending",progress:0}));
+    _uq.totalBytes=fileItems.reduce((s,it)=>s+it.file.size,0);
+    _uq.abortCtrl=new AbortController();
+    if(mode==="dialog"){
+        const el=document.getElementById("dialogBody");
+        if(el)el.innerHTML=`<div class="uq-wrap">
+            <div class="upload-progress-bar"><div class="upload-progress-fill" id="uqBar" style="width:0%"></div></div>
+            <div class="upload-progress-text" id="uqPct">0%</div>
+            <div class="uq-list" id="uqList"></div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+                <button class="modal-btn modal-btn-close" id="uqPauseBtn" onclick="toggleUploadPause()" style="flex:1">${t("uploadPauseBtn")}</button>
+                <button class="modal-btn modal-btn-danger" onclick="cancelUploadQueue()" style="flex:1">${t("uploadCancelBtn")}</button>
+            </div></div>`;
+    }else{
+        const dToast=document.getElementById("dragUploadToast");
+        if(dToast)dToast.style.display="block";
+    }
+    _uqUpdateUI();
+    for(let i=0;i<_uq.files.length;i++){
+        if(_uq.cancelled)break;
+        await _uqWaitIfPaused();if(_uq.cancelled)break;
+        _uq.current=i;_uq.files[i].status="uploading";_uq.curLoaded=0;_uqUpdateUI();
+        try{
+            const item=_uq.files[i];
+            if(item.file.size>=_CHUNK_THRESHOLD){await _uqChunked(item)}else{await _uqSimple(item)}
+            if(_uq.files[i].status!=="skipped"){_uq.files[i].status="done";_uq.doneBytes+=item.file.size;_uq.curLoaded=0}
+        }catch(e){
+            if(e.name==="AbortError"||_uq.cancelled)break;
+            _uq.files[i].status="failed";
+        }
+        _uqUpdateUI();
+    }
+    _uq.active=false;
+    const doneN=_uq.files.filter(f=>f.status==="done").length;
+    const failN=_uq.files.filter(f=>f.status==="failed").length;
+    const skipN=_uq.files.filter(f=>f.status==="skipped").length;
+    let msg=`${t("uploadDone")} ${doneN} ${t("uploadDoneUnit")}`;
+    if(skipN>0)msg+=`, ${t("uploadSkippedN")} ${skipN}`;
+    if(failN>0)msg+=`, ${t("uploadFailCount")}${failN}`;
+    if(_uq.cancelled)msg=t("uploadCancelled");
+    if(mode==="dialog"){
+        const el=document.getElementById("dialogBody");
+        if(el)el.innerHTML=`<div class="modal-form" style="text-align:center;padding:20px 0">
+            <div style="font-size:24px;margin-bottom:8px">${_uq.cancelled?"\u26a0":"\u2705"}</div>
+            <div>${msg}</div>
+            <button class="modal-btn modal-btn-primary" onclick="closeDialog()" style="width:100%;margin-top:12px">${t("uploadCloseBtn")}</button></div>`;
+        toast(msg);
+    }else{
+        const dToast=document.getElementById("dragUploadToast");
+        if(dToast)setTimeout(()=>{dToast.style.display="none"},2000);
+        if(doneN>0)toast(`${t("dragUpload")} ${doneN} ${t("uploadDoneUnit")}`);
+        if(failN>0)toast(t("dragUploadFail")+failN);
+    }
+    fetchList(currentPath);
+}
+async function _uqSimple(item){
+    const fd=new FormData();fd.append("path",_uq.path);fd.append("conflict",_uq.conflict);fd.append("files",item.file);
+    if(item.relPath)fd.append("relativePaths",JSON.stringify([item.relPath]));
+    const r=await xhrUpload(fd,(pct,loaded)=>{_uq.curLoaded=loaded;_uqUpdateUI()},_uq.abortCtrl.signal);
+    if(r.skipped&&r.skipped.length>0)_uq.files[_uq.current].status="skipped";
+    if(r.errors&&r.errors.length>0)throw new Error(r.errors[0]);
+}
+async function _uqChunked(item){
+    const signal=_uq.abortCtrl.signal;
+    const initR=await fetch("/api/upload-init",{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"},body:JSON.stringify({path:_uq.path,filename:item.file.name,size:item.file.size,relativePath:item.relPath||"",conflict:_uq.conflict}),signal}).then(r=>r.json());
+    if(initR.error)throw new Error(initR.error);
+    if(initR.skipped){_uq.files[_uq.current].status="skipped";return}
+    const{upload_id,chunk_size}=initR;let offset=initR.uploaded_bytes||0;
+    item.progress=offset;_uq.curLoaded=offset;_uqUpdateUI();
+    while(offset<item.file.size){
+        await _uqWaitIfPaused();
+        if(_uq.cancelled){fetch("/api/upload-cancel",{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"},body:JSON.stringify({upload_id})}).catch(()=>{});throw new DOMException("Cancelled","AbortError")}
+        if(signal.aborted)throw new DOMException("Aborted","AbortError");
+        const end=Math.min(offset+chunk_size,item.file.size);
+        const chunk=item.file.slice(offset,end);
+        const fd=new FormData();fd.append("upload_id",upload_id);fd.append("offset",String(offset));fd.append("chunk",chunk,"chunk.bin");
+        const cR=await xhrPost("/api/upload-chunk",fd,(loaded)=>{item.progress=offset+loaded;_uq.curLoaded=offset+loaded;_uqUpdateUI()},signal);
+        if(cR.error)throw new Error(cR.error);
+        offset=cR.uploaded_bytes;item.progress=offset;_uq.curLoaded=offset;
+    }
+    const compR=await fetch("/api/upload-complete",{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"},body:JSON.stringify({upload_id}),signal}).then(r=>r.json());
+    if(compR.error)throw new Error(compR.error);
+}
+function toggleUploadPause(){_uq.paused=!_uq.paused;_uqUpdateUI()}
+function cancelUploadQueue(){_uq.cancelled=true;_uq.paused=false;if(_uq.abortCtrl)_uq.abortCtrl.abort()}
 function showUpload(){
     if(!currentPath){toast(t("enterDirFirst"));return}
+    _uploadMode="files";
     openDialog(t("uploadTitle"),`<div class="modal-form">
         <label>${t("uploadTarget")}${eh(currentPath)}</label>
         <input type="file" id="uploadFiles" multiple style="display:none">
-        <div style="display:flex;align-items:center;gap:10px;padding:8px 0">
+        <input type="file" id="uploadFolder" webkitdirectory style="display:none">
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;flex-wrap:wrap">
             <button class="modal-btn modal-btn-close" onclick="document.getElementById('uploadFiles').click()" type="button">&#x1f4c2; ${t("uploadChoose")}</button>
+            <button class="modal-btn modal-btn-close" onclick="document.getElementById('uploadFolder').click()" type="button">&#x1f4c1; ${t("uploadChooseFolder")}</button>
             <span id="uploadFileLabel" style="font-size:13px;color:var(--text2)">${t("uploadNoFile")}</span>
         </div>
-        <div class="hint">${t("uploadHint")}</div>
+        <div class="hint">${t("uploadHint")} | ${t("uploadFolderHint")}</div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;flex-wrap:wrap">
+            <span style="color:var(--text2)">${t("uploadConflictLabel")}</span>
+            <label style="cursor:pointer"><input type="radio" name="uploadConflict" value="rename" checked> ${t("conflictRename")}</label>
+            <label style="cursor:pointer"><input type="radio" name="uploadConflict" value="overwrite"> ${t("conflictOverwrite")}</label>
+            <label style="cursor:pointer"><input type="radio" name="uploadConflict" value="skip"> ${t("conflictSkip")}</label>
+        </div>
         <button class="modal-btn modal-btn-primary" onclick="doUpload()" style="width:100%">${t("uploadBtn")}</button>
-        <div class="upload-progress" id="uploadProgress" style="display:none"><div class="upload-progress-bar"><div class="upload-progress-fill" id="uploadBar"></div></div><div class="upload-progress-text" id="uploadPercent"></div></div>
-        <div id="uploadStatus" style="font-size:13px;color:var(--text2)"></div>
     </div>`);
     document.getElementById("uploadFiles").addEventListener("change",function(){
-        const n=this.files.length;
+        _uploadMode="files";const n=this.files.length;
         document.getElementById("uploadFileLabel").textContent=n?t("uploadFileCount").replace("{n}",n):t("uploadNoFile");
+    });
+    document.getElementById("uploadFolder").addEventListener("change",function(){
+        _uploadMode="folder";const n=this.files.length;
+        document.getElementById("uploadFileLabel").textContent=n?t("uploadFolderCount").replace("{n}",n):t("uploadNoFile");
     });
 }
 async function doUpload(){
-    const files=document.getElementById("uploadFiles").files;
-    if(!files.length){toast(t("selectFiles"));return}
-    const status=document.getElementById("uploadStatus");
-    const progressWrap=document.getElementById("uploadProgress");
-    const bar=document.getElementById("uploadBar");
-    const pct=document.getElementById("uploadPercent");
-    status.textContent=t("uploadUploading");
-    if(progressWrap){progressWrap.style.display="block";bar.style.width="0%";pct.textContent="0%"}
-    const fd=new FormData();
-    fd.append("path",currentPath);
-    for(const f of files)fd.append("files",f);
-    try{
-        const r=await xhrUpload(fd,(percent,loaded,total)=>{
-            if(bar)bar.style.width=percent+"%";
-            if(pct)pct.textContent=`${percent}% (${formatBytes(loaded)} / ${formatBytes(total)})`;
-        });
-        if(bar)bar.style.width="100%";
-        if(r.errors&&r.errors.length)status.textContent=`${t("uploadOkCount")} ${r.count}, ${t("uploadFailCount")}${r.errors.join(", ")}`;
-        else{status.textContent=`${t("uploadDone")} ${r.count} ${t("uploadDoneUnit")}`;toast(`${t("uploaded")}${r.saved.join(", ")}`)}
-        fetchList(currentPath);
-    }catch(e){status.textContent=t("uploadFail")}
+    const isFolder=(_uploadMode==="folder");
+    const input=document.getElementById(isFolder?"uploadFolder":"uploadFiles");
+    const files=input.files;if(!files.length){toast(t("selectFiles"));return}
+    const conflictRadio=document.querySelector('input[name="uploadConflict"]:checked');
+    const conflict=conflictRadio?conflictRadio.value:"rename";
+    const items=[];for(const f of files)items.push({file:f,relativePath:isFolder?f.webkitRelativePath:""});
+    await startUploadQueue(items,currentPath,conflict,"dialog");
 }
 
 // ═══ Mkdir ═══
@@ -3131,11 +4007,18 @@ function deleteConfirm(path,name){
     </div>`);
 }
 async function doDelete(path, recursive=false){
+    if(recursive){
+        showOpProgress(t("opDeleting"),false);
+        const d=await streamOp("/api/delete",{path,recursive:true},updateOpProgress);
+        closeDialog();
+        if(d.ok){toast(t("deleted"));fetchList(currentPath)}
+        else toast(d.error||t("deleteFail"));
+        return;
+    }
     const r=await fetch("/api/delete",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({path, recursive})}).then(r=>r.json());
     if(r.ok){closeDialog();toast(t("deleted"));fetchList(currentPath)}
     else if(r.not_empty){
-        // 非空文件夹，弹出二次强确认弹窗
         const name=path.split("/").pop();
         openDialog(t("deleteRecTitle"),`<div class="modal-form">
             <div style="text-align:center;padding:10px 0">
@@ -3732,12 +4615,49 @@ function getFileTypeFromName(name){
 
 // ═══ Utils ═══
 // CSRF 保护: 包装全局 fetch，为所有 POST 请求自动附加 X-Requested-With 头
-const _origFetch=window.fetch;window.fetch=function(url,opts){if(opts&&opts.method&&opts.method.toUpperCase()==="POST"){opts.headers=opts.headers||{};if(opts.headers instanceof Headers){opts.headers.set("X-Requested-With","XMLHttpRequest")}else if(Array.isArray(opts.headers)){opts.headers.push(["X-Requested-With","XMLHttpRequest"])}else{opts.headers["X-Requested-With"]="XMLHttpRequest"}}return _origFetch.call(this,url,opts)};
+const _origFetch=window.fetch;window.fetch=function(url,opts){if(opts&&opts.method&&["POST","DELETE","PUT","PATCH"].includes(opts.method.toUpperCase())){opts.headers=opts.headers||{};if(opts.headers instanceof Headers){opts.headers.set("X-Requested-With","XMLHttpRequest")}else if(Array.isArray(opts.headers)){opts.headers.push(["X-Requested-With","XMLHttpRequest"])}else{opts.headers["X-Requested-With"]="XMLHttpRequest"}}return _origFetch.call(this,url,opts)};
 function eh(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML}
 function esc(s){return s.replace(/\\/g,"/").replace(/'/g,"\\'").replace(/`/g,"\\`").replace(/"/g,"&quot;").replace(/\n/g,"\\n").replace(/\r/g,"\\r")}
 function sanitizeHTML(html){return typeof DOMPurify!=='undefined'?DOMPurify.sanitize(html,{ADD_TAGS:['use'],ADD_ATTR:['target','xlink:href']}):eh(html)}
-function xhrUpload(fd,onProgress){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open("POST","/api/upload");xhr.setRequestHeader("X-Requested-With","XMLHttpRequest");if(onProgress)xhr.upload.addEventListener("progress",e=>{if(e.lengthComputable)onProgress(Math.round(e.loaded*100/e.total),e.loaded,e.total)});xhr.onload=()=>{try{resolve(JSON.parse(xhr.responseText))}catch(e){reject(e)}};xhr.onerror=()=>reject(new Error("upload failed"));xhr.send(fd)})}
+function xhrUpload(fd,onProgress,abortSignal){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open("POST","/api/upload");xhr.setRequestHeader("X-Requested-With","XMLHttpRequest");if(onProgress)xhr.upload.addEventListener("progress",e=>{if(e.lengthComputable)onProgress(Math.round(e.loaded*100/e.total),e.loaded,e.total)});xhr.onload=()=>{try{resolve(JSON.parse(xhr.responseText))}catch(e){reject(e)}};xhr.onerror=()=>reject(new Error("upload failed"));xhr.onabort=()=>reject(new DOMException("Aborted","AbortError"));if(abortSignal){if(abortSignal.aborted){reject(new DOMException("Aborted","AbortError"));return}abortSignal.addEventListener("abort",()=>xhr.abort())}xhr.send(fd)})}
+function xhrPost(url,fd,onProgress,abortSignal){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open("POST",url);xhr.setRequestHeader("X-Requested-With","XMLHttpRequest");if(onProgress)xhr.upload.addEventListener("progress",e=>{if(e.lengthComputable)onProgress(e.loaded,e.total)});xhr.onload=()=>{try{resolve(JSON.parse(xhr.responseText))}catch(e){reject(e)}};xhr.onerror=()=>reject(new Error("request failed"));xhr.onabort=()=>reject(new DOMException("Aborted","AbortError"));if(abortSignal){if(abortSignal.aborted){reject(new DOMException("Aborted","AbortError"));return}abortSignal.addEventListener("abort",()=>xhr.abort())}xhr.send(fd)})}
 function formatBytes(b){if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB"}
+// ═══ Stream Operation (NDJSON 流式进度) ═══
+async function streamOp(url,body,onProgress){
+    body.stream=true;
+    const resp=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const ct=resp.headers.get("content-type")||"";
+    if(ct.includes("application/json")){return await resp.json()}
+    const reader=resp.body.getReader();const dec=new TextDecoder();let buf="";let result=null;
+    while(true){
+        const{done,value}=await reader.read();if(done)break;
+        buf+=dec.decode(value,{stream:true});
+        const lines=buf.split("\n");buf=lines.pop();
+        for(const ln of lines){if(!ln.trim())continue;const d=JSON.parse(ln);
+            if(d.ok!==undefined||d.error!==undefined||d.conflict!==undefined)result=d;
+            else if(onProgress)onProgress(d);
+        }
+    }
+    if(buf.trim()){try{const d=JSON.parse(buf);if(d.ok!==undefined||d.error!==undefined||d.conflict!==undefined)result=d;else if(onProgress)onProgress(d)}catch(e){}}
+    return result||{ok:true};
+}
+function showOpProgress(title,isBytes){
+    openDialog(title,`<div class="modal-form uq-wrap">
+        <div class="upload-progress-bar"><div class="upload-progress-fill" id="opBar" style="width:0%"></div></div>
+        <div class="upload-progress-text" id="opPct">0%</div>
+        <div id="opFile" style="font-size:13px;color:var(--text2);margin-top:4px;word-break:break-all;text-align:center;min-height:18px"></div>
+    </div>`);
+    window._opIsBytes=isBytes;
+}
+function updateOpProgress(d){
+    const bar=document.getElementById("opBar");const pct=document.getElementById("opPct");const fn=document.getElementById("opFile");
+    if(!bar)return;
+    const percent=d.t>0?Math.round(d.p*100/d.t):0;
+    bar.style.width=percent+"%";
+    if(window._opIsBytes)pct.textContent=`${percent}% (${formatBytes(d.p)} / ${formatBytes(d.t)})`;
+    else pct.textContent=`${d.p} / ${d.t}`;
+    if(d.f&&fn)fn.textContent=d.f;
+}
 
 // ═══ Theme ═══
 let currentTheme=localStorage.getItem("fb_theme")||"dark";
@@ -3770,23 +4690,25 @@ const I18N={
         modalBack:"← 返回上级文档",modalEdit:"✏ 编辑",modalSave:"💾 保存",modalCancelEdit:"取消编辑",modalDownload:"下载",modalShare:"🔗 分享",modalClose:"关闭",
         actRename:"重命名",actDelete:"删除",actDownload:"下载",actCopy:"复制",actMove:"移动",actDownloadFolder:"下载文件夹",
         statusItems:" 项 — ",statusFiltered:"(已筛选)",statusDrives:"个磁盘",emptyFolder:"空文件夹",loadFail:"加载失败",createdPrefix:"创建:",
-        selectFirst:"请先选择文件",packing:"正在打包...",packFail:"打包失败",dlStarted:"下载已开始",packDlFail:"打包下载失败",
+        selectFirst:"请先选择文件",packing:"正在打包...",packFail:"打包失败",dlStarted:"下载已开始",packDlFail:"打包下载失败",packingDl:"打包下载中",
         enterDirFirst:"请先进入一个目录",selectFiles:"请选择文件",enterName:"请输入名称",enterFilename:"请输入文件名",
         extHint:"建议包含扩展名，如 .txt、.md、.py",nameEmpty:"名称不能为空",
         createOk:"创建成功",createFail:"创建失败",fileCreated:"文件已创建: ",deleted:"已删除",deleteFail:"删除失败",
         renameOk:"重命名成功",renameFail:"重命名失败",copyOk:"复制成功",copyFail:"复制失败",moveOk:"移动成功",moveFail:"移动失败",
+        opCopying:"复制中...",opMoving:"移动中...",opDeleting:"删除中...",opExtracting:"解压中...",
         clipUpdated:"剪贴板已更新",bookmarked:"已收藏",bookmarkFail:"收藏失败",unbookmarked:"已取消收藏",
         uploadUploading:"上传中...",uploadFail:"上传失败",uploaded:"上传成功: ",
         noPreviewFile:"没有正在预览的文件",shareFail:"生成分享链接失败",linkCopied:"链接已复制",
         saving:"保存中...",saved:"已保存",saveFail:"保存失败",saveNetErr:"保存失败: 网络错误",editorNotOpen:"编辑器未打开",
         extractOk:"解压成功",extractFail:"解压失败",dlFolderPacking:"正在打包下载文件夹...",
-        dragUpload:"已上传",dragUploadFail:"部分文件上传失败: ",dragUploadErr:"上传失败",
+        dragUpload:"已上传",dragUploadFail:"部分文件上传失败: ",dragUploadErr:"上传失败",dragUploadSkip:"跳过无法访问的文件: ",
         searchNoResult:"未找到匹配结果",searchFound:"找到",searchResults:"个结果",searchScanned:"扫描",searchFiles:"个文件",searchFail:"搜索失败",
         batchDelTitle:"批量删除",batchDelConfirm:"确定要删除选中的",batchDelUnit:"个文件吗？",batchDelIrreversible:"此操作不可撤销",
         batchDelBtn:"确认删除",batchDelDone:"已删除",batchFail:"个失败",
         batchMoveTitle:"批量移动",batchMoveUnit:"个文件",batchMoveDone:"已移动",batchCopyTitle:"批量复制",batchCopyDone:"已复制",
-        uploadTitle:"上传文件",uploadTarget:"目标目录: ",uploadHint:"支持多选，无大小限制",uploadBtn:"开始上传",uploadChoose:"选择文件",uploadNoFile:"未选择任何文件",uploadFileCount:"已选择 {n} 个文件",
+        uploadTitle:"上传文件",uploadTarget:"目标目录: ",uploadHint:"支持多选，无大小限制",uploadBtn:"开始上传",uploadChoose:"选择文件",uploadChooseFolder:"选择文件夹",uploadNoFile:"未选择任何文件",uploadFileCount:"已选择 {n} 个文件",uploadFolderCount:"已选择文件夹，共 {n} 个文件",uploadFolderHint:"支持上传整个文件夹（包含所有子目录）",uploadReadingFolder:"正在读取文件夹...",
         uploadOkCount:"成功",uploadFailCount:"失败: ",uploadDone:"成功上传",uploadDoneUnit:"个文件",
+        uploadPauseBtn:"暂停",uploadResumeBtn:"继续",uploadCancelBtn:"取消",uploadCancelled:"已取消上传",uploadSkippedN:"跳过",uploadCloseBtn:"关闭",
         mkdirTitle:"新建文件夹",mkdirIn:"在",mkdirCreate:"下创建",mkdirPlaceholder:"文件夹名称",mkdirBtn:"创建",
         mkfileTitle:"📄 新建文件",mkfilePlaceholder:"文件名，如: notes.md、config.json、script.py",
         mkfileHint:"请输入完整文件名（含扩展名），如 readme.md、data.csv、app.py",
@@ -3813,7 +4735,9 @@ const I18N={
         detailSize:"大小:",detailType:"类型:",detailModified:"修改:",
         zipEntries:"个条目",zipExtractHere:"解压到此处",zipFilename:"文件名",
         bmAddTitle:"收藏当前目录",gridToggleTitle:"切换网格/列表视图",themeToggleTitle:"切换亮/暗主题",langToggleTitle:"切换语言",
-        uploadTitleTip:"上传文件",mkdirTitleTip:"新建文件夹",mkfileTitleTip:"新建文件",selectTitleTip:"多选模式",selectAllTitleTip:"全选/取消全选",batchDlTitleTip:"批量下载",batchDelTitleTip:"批量删除",batchMoveTitleTip:"批量移动",batchCopyTitleTip:"批量复制",clipboardTitleTip:"共享剪贴板",bookmarksTitleTip:"收藏夹"},
+        uploadTitleTip:"上传文件",mkdirTitleTip:"新建文件夹",mkfileTitleTip:"新建文件",selectTitleTip:"多选模式",selectAllTitleTip:"全选/取消全选",batchDlTitleTip:"批量下载",batchDelTitleTip:"批量删除",batchMoveTitleTip:"批量移动",batchCopyTitleTip:"批量复制",clipboardTitleTip:"共享剪贴板",bookmarksTitleTip:"收藏夹",
+        conflictTitle:"⚠ 文件已存在",conflictMsg:"目标位置已存在同名项目：",conflictOverwrite:"覆盖",conflictRename:"重命名保留两者",conflictSkip:"跳过",conflictApplyAll:"应用到后续所有冲突",
+        conflictExtractMsg:"以下文件在目标位置已存在：",conflictExtractMore:"等共 {n} 个文件",uploadConflictLabel:"文件已存在时："},
     en:{upload:"⬆ Upload",mkdir:"📁+ Folder",mkfile:"📄+ File",select:"☐ Select",selectAll:"☑ All",
         batchDl:"📦 Download",batchDel2:"🗑 Delete",batchMove:"✂ Move",batchCopy:"📋 Copy",
         clipboard:"📋 Clipboard",bookmarks:"⭐ Bookmarks",logout:"🚪 Logout",
@@ -3829,23 +4753,25 @@ const I18N={
         modalBack:"← Back",modalEdit:"✏ Edit",modalSave:"💾 Save",modalCancelEdit:"Cancel",modalDownload:"Download",modalShare:"🔗 Share",modalClose:"Close",
         actRename:"Rename",actDelete:"Delete",actDownload:"Download",actCopy:"Copy",actMove:"Move",actDownloadFolder:"Download folder",
         statusItems:" items — ",statusFiltered:"(filtered)",statusDrives:" drive(s)",emptyFolder:"Empty folder",loadFail:"Failed to load",createdPrefix:"Created:",
-        selectFirst:"Select files first",packing:"Packing...",packFail:"Pack failed",dlStarted:"Download started",packDlFail:"Batch download failed",
+        selectFirst:"Select files first",packing:"Packing...",packFail:"Pack failed",dlStarted:"Download started",packDlFail:"Batch download failed",packingDl:"Packing & downloading",
         enterDirFirst:"Enter a directory first",selectFiles:"Select files",enterName:"Enter a name",enterFilename:"Enter a filename",
         extHint:"Include an extension, e.g. .txt, .md, .py",nameEmpty:"Name cannot be empty",
         createOk:"Created",createFail:"Create failed",fileCreated:"File created: ",deleted:"Deleted",deleteFail:"Delete failed",
         renameOk:"Renamed",renameFail:"Rename failed",copyOk:"Copied",copyFail:"Copy failed",moveOk:"Moved",moveFail:"Move failed",
+        opCopying:"Copying...",opMoving:"Moving...",opDeleting:"Deleting...",opExtracting:"Extracting...",
         clipUpdated:"Clipboard updated",bookmarked:"Bookmarked",bookmarkFail:"Bookmark failed",unbookmarked:"Bookmark removed",
         uploadUploading:"Uploading...",uploadFail:"Upload failed",uploaded:"Uploaded: ",
         noPreviewFile:"No file being previewed",shareFail:"Failed to generate share link",linkCopied:"Link copied",
         saving:"Saving...",saved:"Saved",saveFail:"Save failed",saveNetErr:"Save failed: network error",editorNotOpen:"Editor not open",
         extractOk:"Extracted",extractFail:"Extract failed",dlFolderPacking:"Packing folder for download...",
-        dragUpload:"uploaded",dragUploadFail:"Some files failed: ",dragUploadErr:"Upload failed",
+        dragUpload:"uploaded",dragUploadFail:"Some files failed: ",dragUploadErr:"Upload failed",dragUploadSkip:"Skipped inaccessible files: ",
         searchNoResult:"No matches found",searchFound:"Found",searchResults:"result(s)",searchScanned:"scanned",searchFiles:"file(s)",searchFail:"Search failed",
         batchDelTitle:"Batch Delete",batchDelConfirm:"Delete selected",batchDelUnit:"file(s)?",batchDelIrreversible:"This action cannot be undone",
         batchDelBtn:"Confirm Delete",batchDelDone:"Deleted",batchFail:"failed",
         batchMoveTitle:"Batch Move",batchMoveUnit:"file(s)",batchMoveDone:"Moved",batchCopyTitle:"Batch Copy",batchCopyDone:"Copied",
-        uploadTitle:"Upload Files",uploadTarget:"Target: ",uploadHint:"Multi-select, no size limit",uploadBtn:"Start Upload",uploadChoose:"Choose Files",uploadNoFile:"No file selected",uploadFileCount:"{n} file(s) selected",
+        uploadTitle:"Upload Files",uploadTarget:"Target: ",uploadHint:"Multi-select, no size limit",uploadBtn:"Start Upload",uploadChoose:"Choose Files",uploadChooseFolder:"Choose Folder",uploadNoFile:"No file selected",uploadFileCount:"{n} file(s) selected",uploadFolderCount:"Folder selected, {n} file(s) total",uploadFolderHint:"Upload entire folder with all subdirectories",uploadReadingFolder:"Reading folder...",
         uploadOkCount:"Success",uploadFailCount:"Failed: ",uploadDone:"Uploaded",uploadDoneUnit:"file(s)",
+        uploadPauseBtn:"Pause",uploadResumeBtn:"Resume",uploadCancelBtn:"Cancel",uploadCancelled:"Upload cancelled",uploadSkippedN:"Skipped",uploadCloseBtn:"Close",
         mkdirTitle:"New Folder",mkdirIn:"In",mkdirCreate:"",mkdirPlaceholder:"Folder name",mkdirBtn:"Create",
         mkfileTitle:"📄 New File",mkfilePlaceholder:"Filename, e.g. notes.md, config.json, script.py",
         mkfileHint:"Enter full filename with extension",
@@ -3872,7 +4798,9 @@ const I18N={
         detailSize:"Size:",detailType:"Type:",detailModified:"Modified:",
         zipEntries:"entries",zipExtractHere:"Extract here",zipFilename:"Filename",
         bmAddTitle:"Bookmark current directory",gridToggleTitle:"Toggle grid/list view",themeToggleTitle:"Toggle light/dark theme",langToggleTitle:"Toggle language",
-        uploadTitleTip:"Upload files",mkdirTitleTip:"New folder",mkfileTitleTip:"New file",selectTitleTip:"Multi-select mode",selectAllTitleTip:"Select all / Deselect all",batchDlTitleTip:"Batch download",batchDelTitleTip:"Batch delete",batchMoveTitleTip:"Batch move",batchCopyTitleTip:"Batch copy",clipboardTitleTip:"Shared clipboard",bookmarksTitleTip:"Bookmarks"}
+        uploadTitleTip:"Upload files",mkdirTitleTip:"New folder",mkfileTitleTip:"New file",selectTitleTip:"Multi-select mode",selectAllTitleTip:"Select all / Deselect all",batchDlTitleTip:"Batch download",batchDelTitleTip:"Batch delete",batchMoveTitleTip:"Batch move",batchCopyTitleTip:"Batch copy",clipboardTitleTip:"Shared clipboard",bookmarksTitleTip:"Bookmarks",
+        conflictTitle:"⚠ File Already Exists",conflictMsg:"An item with the same name already exists:",conflictOverwrite:"Overwrite",conflictRename:"Rename (Keep Both)",conflictSkip:"Skip",conflictApplyAll:"Apply to all conflicts",
+        conflictExtractMsg:"The following files already exist:",conflictExtractMore:"and {n} more file(s)",uploadConflictLabel:"If file exists:"}
 };
 const _serverLang="{{ server_lang }}";
 const _autoLang=navigator.language&&navigator.language.startsWith("zh")?"zh":"en";
@@ -3933,7 +4861,7 @@ function toggleGridView(){
     else if(lastItems){renderFileList(lastItems)}
 }
 // lastItems 已在 renderFileList 内部赋值，此处仅声明初始值
-let lastItems=null;
+let lastItems=[];
 
 // ═══ Drag & Drop Upload ═══
 (function initDragDrop(){
@@ -3953,28 +4881,54 @@ let lastItems=null;
         e.preventDefault();
         dragCounter=0;overlay.classList.remove("show");
         if(!currentPath){toast(t("enterDirFirst"));return}
+        const items=e.dataTransfer.items;
+        if(items&&items.length){
+            let hasDir=false;const entries=[];
+            for(let i=0;i<items.length;i++){
+                const entry=items[i].webkitGetAsEntry&&items[i].webkitGetAsEntry();
+                if(entry){entries.push(entry);if(entry.isDirectory)hasDir=true}
+            }
+            if(hasDir){uploadEntries(entries);return}
+        }
         const files=e.dataTransfer.files;
         if(!files.length)return;
         uploadFiles(files);
     });
 })();
 async function uploadFiles(files){
-    const fd=new FormData();
-    fd.append("path",currentPath);
-    for(const f of files)fd.append("files",f);
+    const items=[];for(const f of files)items.push({file:f,relativePath:""});
+    await startUploadQueue(items,currentPath,"rename","toast");
+}
+async function uploadEntries(entries){
     const dToast=document.getElementById("dragUploadToast");
-    const dBar=document.getElementById("dragUploadBar");
     const dText=document.getElementById("dragUploadText");
-    if(dToast){dToast.style.display="block";dBar.style.width="0%";dText.textContent=t("uploadUploading")}
-    try{
-        const r=await xhrUpload(fd,(percent,loaded,total)=>{
-            if(dBar)dBar.style.width=percent+"%";
-            if(dText)dText.textContent=`${t("uploadUploading")} ${percent}% (${formatBytes(loaded)} / ${formatBytes(total)})`;
-        });
-        if(dToast)setTimeout(()=>{dToast.style.display="none"},2000);
-        if(r.count>0){toast(`${t("dragUpload")} ${r.count} ${t("uploadDoneUnit")}`);fetchList(currentPath)}
-        if(r.errors&&r.errors.length)toast(t("dragUploadFail")+r.errors.join(", "));
-    }catch(e){if(dToast)dToast.style.display="none";toast(t("dragUploadErr"))}
+    if(dToast){dToast.style.display="block";dText.textContent=t("uploadReadingFolder")}
+    const fileList=[];const skippedEntries=[];
+    async function readEntry(entry,prefix){
+        try{
+            if(entry.isFile){
+                const file=await new Promise((res,rej)=>entry.file(res,rej));
+                fileList.push({file,relPath:prefix+entry.name});
+            }else if(entry.isDirectory){
+                const dirReader=entry.createReader();
+                let allEntries=[];
+                const readBatch=()=>new Promise((res,rej)=>dirReader.readEntries(res,rej));
+                let batch;
+                do{batch=await readBatch();allEntries=allEntries.concat(Array.from(batch))}while(batch.length>0);
+                for(const child of allEntries)await readEntry(child,prefix+entry.name+"/");
+            }
+        }catch(e){skippedEntries.push(prefix+entry.name)}
+    }
+    for(const entry of entries){
+        try{
+            if(entry.isDirectory)await readEntry(entry,"");
+            else if(entry.isFile){const file=await new Promise((res,rej)=>entry.file(res,rej));fileList.push({file,relPath:""})}
+        }catch(e){skippedEntries.push(entry.name)}
+    }
+    if(skippedEntries.length)toast(t("dragUploadSkip")+skippedEntries.length);
+    if(!fileList.length){if(dToast)dToast.style.display="none";return}
+    const items=fileList.map(it=>({file:it.file,relativePath:it.relPath}));
+    await startUploadQueue(items,currentPath,"rename","toast");
 }
 
 // ═══ Copy / Move ═══
@@ -4032,39 +4986,118 @@ function pickerLoadDir(dirPath){
     }).catch(()=>{list.innerHTML='<div style="padding:12px;color:var(--danger)">'+t("pickerFail")+'</div>'});
 }
 
+// ═══ Conflict Resolution Dialog ═══
+function showConflictDialog(name,isBatch,callback){
+    let html=`<div class="modal-form">
+        <div style="text-align:center;padding:10px 0">
+            <div style="font-size:32px;margin-bottom:8px">&#x26a0;&#xfe0f;</div>
+            <div>${t("conflictMsg")}</div>
+            <div style="font-weight:600;margin:6px 0;word-break:break-all">${eh(name)}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+            <button class="modal-btn modal-btn-danger" onclick="_conflictResolve('overwrite')">${t("conflictOverwrite")}</button>
+            <button class="modal-btn modal-btn-primary" onclick="_conflictResolve('rename')">${t("conflictRename")}</button>
+            <button class="modal-btn modal-btn-close" onclick="_conflictResolve('skip')">${t("conflictSkip")}</button>
+        </div>`;
+    if(isBatch){
+        html+=`<label style="display:flex;align-items:center;gap:6px;margin-top:12px;justify-content:center;font-size:13px;color:var(--text2);cursor:pointer">
+            <input type="checkbox" id="conflictApplyAll"> ${t("conflictApplyAll")}
+        </label>`;
+    }
+    html+=`</div>`;
+    openDialog(t("conflictTitle"),html);
+    window._conflictResolve=function(choice){
+        const applyAll=isBatch&&document.getElementById("conflictApplyAll")&&document.getElementById("conflictApplyAll").checked;
+        closeDialog();
+        callback(choice,applyAll);
+    };
+}
+function showExtractConflictDialog(files,total,callback){
+    const maxShow=10;
+    let listHtml=files.slice(0,maxShow).map(f=>`<div style="font-size:13px;padding:2px 0;word-break:break-all">• ${eh(f)}</div>`).join("");
+    if(total>maxShow) listHtml+=`<div style="font-size:13px;color:var(--text2);padding:2px 0">${t("conflictExtractMore").replace("{n}",total)}</div>`;
+    const html=`<div class="modal-form">
+        <div style="text-align:center;padding:6px 0">
+            <div style="font-size:32px;margin-bottom:8px">&#x26a0;&#xfe0f;</div>
+            <div style="margin-bottom:8px">${t("conflictExtractMsg")}</div>
+        </div>
+        <div style="max-height:160px;overflow-y:auto;margin-bottom:12px;padding:8px;background:var(--bg);border-radius:8px;border:1px solid var(--border)">${listHtml}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+            <button class="modal-btn modal-btn-danger" onclick="_conflictResolve('overwrite')">${t("conflictOverwrite")}</button>
+            <button class="modal-btn modal-btn-primary" onclick="_conflictResolve('rename')">${t("conflictRename")}</button>
+            <button class="modal-btn modal-btn-close" onclick="_conflictResolve('skip')">${t("conflictSkip")}</button>
+        </div></div>`;
+    openDialog(t("conflictTitle"),html);
+    window._conflictResolve=function(choice){closeDialog();callback(choice)};
+}
+
 function copyPrompt(path,name){
     openDirPicker(`${t("pickerCopy")} ${name}`,currentPath,async(destDir)=>{
-        const r=await fetch("/api/copy",{method:"POST",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({src:path,dest_dir:destDir})}).then(r=>r.json());
-        if(r.ok){toast(t("copyOk"));fetchList(currentPath)}
-        else toast(r.error||t("copyFail"));
+        async function doCopy(conflict){
+            const body={src:path,dest_dir:destDir};
+            if(conflict)body.conflict=conflict;
+            showOpProgress(t("opCopying"),true);
+            const d=await streamOp("/api/copy",body,updateOpProgress);
+            closeDialog();
+            if(d.ok){toast(d.skipped?t("conflictSkip"):t("copyOk"));fetchList(currentPath)}
+            else if(d.conflict){showConflictDialog(d.name,false,(choice)=>{doCopy(choice)})}
+            else toast(d.error||t("copyFail"));
+        }
+        doCopy();
     });
 }
 function movePrompt(path,name){
     openDirPicker(`${t("pickerMove")} ${name}`,currentPath,async(destDir)=>{
-        const r=await fetch("/api/move",{method:"POST",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({src:path,dest_dir:destDir})}).then(r=>r.json());
-        if(r.ok){toast(t("moveOk"));fetchList(currentPath)}
-        else toast(r.error||t("moveFail"));
+        async function doMove(conflict){
+            const body={src:path,dest_dir:destDir};
+            if(conflict)body.conflict=conflict;
+            showOpProgress(t("opMoving"),true);
+            const d=await streamOp("/api/move",body,updateOpProgress);
+            closeDialog();
+            if(d.ok){toast(d.skipped?t("conflictSkip"):t("moveOk"));fetchList(currentPath)}
+            else if(d.conflict){showConflictDialog(d.name,false,(choice)=>{doMove(choice)})}
+            else toast(d.error||t("moveFail"));
+        }
+        doMove();
     });
 }
 
 // ═══ Folder Download ═══
-function downloadFolder(path,name){
-    const a=document.createElement("a");
-    a.href=`/api/download-folder?path=${encodeURIComponent(path)}`;
-    a.download=name+".zip";
-    a.click();
-    toast(t("dlFolderPacking"));
+async function downloadFolder(path,name){
+    showOpProgress(t("packingDl"),true);
+    try{
+        const r=await fetch(`/api/download-folder?path=${encodeURIComponent(path)}`);
+        if(!r.ok){closeDialog();toast(t("packFail"));return}
+        const total=parseInt(r.headers.get("Content-Length")||"0",10);
+        const reader=r.body.getReader();const chunks=[];let loaded=0;
+        while(true){
+            const{done,value}=await reader.read();if(done)break;
+            chunks.push(value);loaded+=value.length;
+            if(total>0)updateOpProgress({p:loaded,t:total});
+        }
+        closeDialog();
+        const blob=new Blob(chunks,{type:"application/zip"});
+        const a=document.createElement("a");
+        a.href=URL.createObjectURL(blob);
+        a.download=name+".zip";
+        a.click();URL.revokeObjectURL(a.href);
+        toast(t("dlStarted"));
+    }catch(e){closeDialog();toast(t("packDlFail"))}
 }
 
 // ═══ ZIP Extract ═══
-async function extractZip(zipPath){
-    const destDir=zipPath.replace(/[/\\][^/\\]+$/, "");  // 兼容两种斜杠，取所在目录
-    const r=await fetch("/api/extract",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({path:zipPath,dest_dir:destDir})}).then(r=>r.json());
-    if(r.ok){toast(t("extractOk"));fetchList(currentPath)}
-    else toast(r.error||t("extractFail"));
+async function extractZip(zipPath,conflict){
+    const destDir=zipPath.replace(/[/\\][^/\\]+$/, "");
+    const body={path:zipPath,dest_dir:destDir};
+    if(conflict)body.conflict=conflict;
+    showOpProgress(t("opExtracting"),false);
+    const d=await streamOp("/api/extract",body,updateOpProgress);
+    closeDialog();
+    if(d.ok){toast(t("extractOk"));fetchList(currentPath)}
+    else if(d.conflict){
+        showExtractConflictDialog(d.files||[],d.total||0,(choice)=>{extractZip(zipPath,choice)});
+    }
+    else toast(d.error||t("extractFail"));
 }
 
 // ═══ Logout ═══
@@ -4588,9 +5621,22 @@ if __name__ == "__main__":
     banner("")
 
     try:
-        _ssl_ctx = (_ssl_cert, _ssl_key) if _use_https else None
-        app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True,
-                ssl_context=_ssl_ctx)
+        if _use_https:
+            # Waitress 不支持 SSL，HTTPS 模式使用 Flask 内置服务器
+            banner("  Server:   Flask built-in (HTTPS mode)")
+            _ssl_ctx = (_ssl_cert, _ssl_key)
+            app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True,
+                    ssl_context=_ssl_ctx)
+        else:
+            try:
+                from waitress import serve as _waitress_serve
+                banner("  Server:   Waitress (production)")
+                _waitress_serve(app, host="0.0.0.0", port=PORT,
+                                threads=8, channel_timeout=120,
+                                max_request_body_size=10737418240)
+            except ImportError:
+                banner("  Server:   Flask built-in (install waitress for production)")
+                app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
     except KeyboardInterrupt:
         pass
     finally:

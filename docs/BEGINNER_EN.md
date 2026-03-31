@@ -8,8 +8,9 @@
 
 > **Shortcut**: Don't want to install Python? Download from [Releases](https://github.com/bbyybb/lan-file-browser/releases) and skip Steps 1-3 below.
 > - **Windows**: Download `FileBrowser.exe`, double-click to run
-> - **macOS**: Download `FileBrowser-macOS-*`, open Terminal and run `cd ~/Downloads && chmod +x FileBrowser* && ./FileBrowser*`
-> - **Linux**: Download `FileBrowser-Linux`, open Terminal and run `cd ~/Downloads && chmod +x FileBrowser* && ./FileBrowser*`
+> - **macOS**: Download `lan-file-browser-macOS-*`, double-click to run (Terminal opens automatically)
+>>   If macOS says "cannot be verified", go to **System Settings > Privacy & Security** and click **Open Anyway**
+> - **Linux**: Download `lan-file-browser-Linux`, double-click or run `cd ~/Downloads && ./lan-file-browser*` in Terminal
 
 ---
 
@@ -178,7 +179,7 @@ Seeing the following screen means the server started successfully:
 
 ```
 ======================================================
-  [File Browser v2.2.0] started
+  [File Browser v2.6.0] started
 ======================================================
   Local:    http://localhost:25600
   Phone:    http://192.168.1.100:25600    ← The address to open on your phone
@@ -277,7 +278,7 @@ During startup, choose password mode `4` (multi-user) → choose `1` (auto-gener
 1. Open a file preview
 2. Click the **"🔗 Share"** button at the top
 3. Copy the generated link and send to your friend
-4. Your friend clicks the link to download directly — no login needed (link auto-expires after 1 hour)
+4. Your friend clicks the link to download directly — no login needed (link expiration is configurable: 5 minutes / 30 minutes / 1 hour / 6 hours / 12 hours / 24 hours, default 1 hour; the link auto-expires after the chosen period)
 
 ---
 

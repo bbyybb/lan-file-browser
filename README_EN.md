@@ -47,10 +47,11 @@ Download from the [Releases](https://github.com/bbyybb/lan-file-browser/releases
 
 > macOS Intel users can also run the Apple Silicon version directly (Rosetta 2 provides automatic compatibility).
 
-macOS / Linux instructions (3 steps):
-1. Open **Terminal** (macOS: Launchpad → Other → Terminal; Linux: Ctrl+Alt+T)
-2. Navigate to downloads: `cd ~/Downloads`
-3. Add execute permission and run: `chmod +x FileBrowser* && ./FileBrowser*`
+macOS / Linux instructions:
+- **Double-click** (macOS): Double-click the downloaded file in Finder — it opens in Terminal automatically
+- **Terminal**: `cd ~/Downloads && ./lan-file-browser*`
+
+> **macOS security note:** On first run, macOS may show "cannot be opened because the developer cannot be verified". Go to **System Settings > Privacy & Security**, find the blocked app near the bottom, and click **Open Anyway**.
 
 **Verify file integrity (optional):** Each release includes SHA256 checksums on the Releases page:
 ```bash
@@ -119,7 +120,7 @@ After successful startup, the terminal shows:
 
 ```
 ======================================================
-  [File Browser v2.2.0] started
+  [File Browser v2.6.0] started
 ======================================================
   Local:    http://localhost:25600
   Phone:    http://192.168.1.100:25600
@@ -140,9 +141,9 @@ After successful startup, the terminal shows:
 | Sort & Filter | Sort by name/size/creation time/modification time, filter by file type or extension |
 | Directory Bookmarks | Add frequently used directories to bookmarks for quick access; isolated per user in multi-user mode |
 | Remember Location | Auto-returns to last browsed directory (per device) |
-| **File Copy** | Visual directory picker to choose target, auto-adds `_copy` suffix for duplicates |
-| **File Move** | Visual directory picker to choose target, supports browse navigation |
-| Upload Files | Click upload button or **drag & drop files onto the page**, with upload progress bar |
+| **File Copy** | Visual directory picker to choose target, prompts overwrite/rename/skip on name conflict, real-time progress bar for large files |
+| **File Move** | Visual directory picker to choose target, prompts overwrite/rename/skip on name conflict, real-time progress bar for large files |
+| Upload Files | Click upload button or **drag & drop files onto the page**, supports **uploading entire folders** (preserves directory structure), choose how to handle duplicate filenames, with upload progress bar. Large files (≥5MB) use chunked resumable upload with pause/resume/cancel support |
 | Create File/Folder | Create in current directory, supports initial content input |
 | Rename / Delete | Rename with conflict detection; deleting non-empty folders requires confirmation then **recursive deletion** |
 
@@ -156,7 +157,7 @@ After successful startup, the terminal shows:
 | Markdown | marked.js rendering (GFM syntax + Mermaid diagrams), supports in-document link navigation with back button |
 | **Office Preview** | docx rendered as HTML, xlsx/xls rendered as tables (mammoth.js + SheetJS) |
 | Code/Text | 40+ language syntax highlighting |
-| **ZIP Preview** | Click `.zip` files to view contents, one-click **online extraction** |
+| **ZIP Preview** | Click `.zip` files to view contents, one-click **online extraction** (prompts on name conflicts) |
 | Online Editing | Edit and save text/code/Markdown files directly, supports Tab indent, Ctrl+S, auto `.bak` backup |
 
 ### Download & Sharing
@@ -204,6 +205,16 @@ After successful startup, the terminal shows:
 | Network | Computer and phone on the same LAN |
 | Browser | Chrome (recommended), Safari, Firefox, Edge |
 | OS | Windows 10/11, macOS 10.15+, Linux |
+
+### Production Deployment (Optional)
+
+The built-in Flask development server is sufficient for a small number of users on a LAN. If you need better concurrency (e.g., many users accessing simultaneously), you can use [waitress](https://docs.pylonsproject.org/projects/waitress/) as a replacement:
+
+```bash
+pip install waitress && waitress-serve --host=0.0.0.0 --port=25600 file_browser:app
+```
+
+> This is optional. For most scenarios, simply running `python file_browser.py` is sufficient.
 
 ---
 
@@ -359,6 +370,7 @@ lan-file-browser/
 ├── stop_server.sh         # Stop script (macOS/Linux)
 ├── requirements.txt       # Runtime dependency list
 ├── requirements-dev.txt   # Development/test dependency list
+├── pyproject.toml         # pytest / coverage configuration
 ├── LICENSE                # MIT License
 ├── THIRD_PARTY_LICENSES   # Third-party library license notices
 ├── README.md              # Chinese documentation (quick start)

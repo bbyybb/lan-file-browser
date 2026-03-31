@@ -38,6 +38,7 @@
 - 所有响应包含安全头（`Content-Security-Policy`、`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`）
 - 正则搜索具有 ReDoS 危险模式检测
 - POST 请求通过 `X-Requested-With` 自定义请求头校验防御 CSRF 攻击（登录接口豁免）
+- 分片上传安全措施：所有分片上传接口均需登录认证和 CSRF Header；临时分片文件 24 小时后自动清理；`upload_id` 使用安全随机数生成防止猜测；分片合并时校验完整性；会话过期后关联的分片上传自动失效
 - 详细的安全机制和最佳实践请参见 [README 安全说明](README.md#安全说明)
 
 ---
@@ -82,4 +83,5 @@ This project is a **LAN file browsing tool** designed for trusted network enviro
 - All responses include security headers (`Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`)
 - Regex search includes ReDoS dangerous pattern detection
 - POST requests are protected against CSRF via `X-Requested-With` custom header validation (login endpoint is exempt)
+- Chunked upload security: all chunked upload endpoints require authentication and CSRF header; temporary chunk files are auto-cleaned after 24 hours; `upload_id` uses cryptographically secure random generation to prevent guessing; integrity is verified during chunk merging; chunked uploads are automatically invalidated when the session expires
 - For detailed security mechanisms and best practices, see [README Security Section](README_EN.md#security)

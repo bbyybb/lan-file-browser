@@ -47,10 +47,11 @@
 
 > macOS Intel 用户也可直接运行 Apple Silicon 版本（Rosetta 2 会自动兼容）。
 
-macOS / Linux 使用方法（3 步）：
-1. 打开「终端」（macOS: 启动台 → 其他 → 终端；Linux: Ctrl+Alt+T）
-2. 进入下载目录：`cd ~/Downloads`
-3. 添加执行权限并运行：`chmod +x FileBrowser* && ./FileBrowser*`
+macOS / Linux 使用方法：
+- **双击运行**（macOS）：在 Finder 中双击下载的文件即可自动打开终端运行
+- **终端运行**：`cd ~/Downloads && ./lan-file-browser*`
+
+> **macOS 安全提示：** 首次运行时系统可能提示"无法打开，因为无法验证开发者"。请前往「系统设置 > 隐私与安全性」，在下方找到被阻止的应用，点击「仍要打开」即可。
 
 **验证文件完整性（可选）：** 每次发布会在 Releases 页面附上 SHA256 校验值，可自行核对：
 ```bash
@@ -119,7 +120,7 @@ python file_browser.py --help
 
 ```
 ======================================================
-  [File Browser v2.2.0] started
+  [File Browser v2.6.0] started
 ======================================================
   Local:    http://localhost:25600
   Phone:    http://192.168.1.100:25600
@@ -140,9 +141,9 @@ python file_browser.py --help
 | 排序与筛选 | 按名称/大小/创建时间/修改时间排序，按文件类型或扩展名筛选 |
 | 目录收藏 | 将常用目录添加到收藏夹，一键直达；多用户模式下按用户隔离 |
 | 记住位置 | 自动回到上次浏览的目录（每台设备独立记忆） |
-| **文件复制** | 可视化目录选择器选择目标，同名自动加 `_copy` 后缀 |
-| **文件移动** | 可视化目录选择器选择目标，支持浏览导航 |
-| 上传文件 | 点击上传按钮或**直接拖拽文件到页面**，支持上传进度条显示 |
+| **文件复制** | 可视化目录选择器选择目标，同名冲突时弹窗选择覆盖/重命名/跳过，大文件实时进度条 |
+| **文件移动** | 可视化目录选择器选择目标，同名冲突时弹窗选择覆盖/重命名/跳过，大文件实时进度条 |
+| 上传文件 | 点击上传按钮或**直接拖拽文件到页面**，支持**上传整个文件夹**（保留目录结构），可选择同名文件处理方式，支持上传进度条显示。大文件(≥5MB)自动分片断点续传，支持暂停/继续/取消 |
 | 新建文件/文件夹 | 在当前目录创建，支持输入初始内容 |
 | 重命名 / 删除 | 重命名支持名称冲突检测；删除非空文件夹需二次确认后**递归删除** |
 
@@ -156,7 +157,7 @@ python file_browser.py --help
 | Markdown | marked.js 渲染（GFM 语法 + Mermaid 图表），支持文档内链接跳转与返回导航 |
 | **Office 预览** | docx 渲染为 HTML，xlsx/xls 渲染为表格（mammoth.js + SheetJS） |
 | 代码/文本 | 40+ 种语言语法高亮 |
-| **ZIP 预览** | 点击 `.zip` 文件直接查看内容列表，一键**在线解压** |
+| **ZIP 预览** | 点击 `.zip` 文件直接查看内容列表，一键**在线解压**（同名冲突时弹窗选择处理方式） |
 | 在线编辑 | 文本/代码/Markdown 文件直接编辑保存，支持 Tab 缩进、Ctrl+S、自动 `.bak` 备份 |
 
 ### 下载与分享
@@ -204,6 +205,16 @@ python file_browser.py --help
 | 网络 | 电脑和手机在同一局域网 |
 | 浏览器 | Chrome（推荐）、Safari、Firefox、Edge |
 | 系统 | Windows 10/11、macOS 10.15+、Linux |
+
+### 生产环境部署（可选）
+
+默认的 Flask 内置服务器对局域网少量用户已经够用。如果需要更好的并发性能（例如多人同时访问），可以使用 [waitress](https://docs.pylonsproject.org/projects/waitress/) 替代 Flask 内置服务器：
+
+```bash
+pip install waitress && waitress-serve --host=0.0.0.0 --port=25600 file_browser:app
+```
+
+> 这是可选的，大多数场景下直接运行 `python file_browser.py` 即可。
 
 ---
 
@@ -359,6 +370,7 @@ lan-file-browser/
 ├── stop_server.sh         # 停止脚本 (macOS/Linux)
 ├── requirements.txt       # 运行依赖列表
 ├── requirements-dev.txt   # 开发/测试依赖列表
+├── pyproject.toml         # pytest / 覆盖率配置
 ├── LICENSE                # MIT 协议
 ├── THIRD_PARTY_LICENSES   # 第三方库许可证声明
 ├── README.md              # 中文文档（快速上手）

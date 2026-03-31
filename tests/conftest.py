@@ -19,11 +19,12 @@ import file_browser
 
 
 class CSRFClient(FlaskClient):
-    """测试客户端：自动为所有 POST 请求附加 CSRF 保护 header。"""
+    """测试客户端：自动为所有修改型请求附加 CSRF 保护 header。"""
+    _CSRF_METHODS = {"POST", "DELETE", "PUT", "PATCH"}
     def open(self, *args, **kwargs):
         method = kwargs.get("method", "").upper()
-        # 检查 positional args 中或 kwargs 中的 method
-        if method == "POST" or (args and hasattr(args[0], 'method') and args[0].method == "POST"):
+        req_method = args[0].method if (args and hasattr(args[0], 'method')) else ""
+        if method in self._CSRF_METHODS or req_method in self._CSRF_METHODS:
             headers = kwargs.get("headers", {})
             if isinstance(headers, dict):
                 headers.setdefault("X-Requested-With", "XMLHttpRequest")
