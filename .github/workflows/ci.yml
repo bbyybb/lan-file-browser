@@ -172,10 +172,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
+          pattern: lan-file-browser-*
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
