@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
+## [v2.6.1] - 2026-04-01
+
+### Fixed / 修复
+- 修复在无写入权限的目录下新建文件夹时返回"内部错误"而非"权限不足"的问题，同时补全了上传、分片上传、ZIP 预览等 API 的权限错误提示 / Fixed mkdir returning "internal error" instead of "permission denied" in write-protected directories; also added proper PermissionError handling to upload, chunked upload, and zip-list APIs
+- CI Release 排除覆盖率报告文件，仅发布 4 个平台的可执行文件 / CI Release now excludes coverage report files, only publishes 4 platform executables
+
+---
+
 ## [v2.6.0] - 2026-03-31
 
 ### Added / 新增
@@ -216,6 +224,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - 基本文件浏览功能 / Basic file browsing
 - 文件下载 / File download
 
+[v2.6.1]: https://github.com/bbyybb/lan-file-browser/compare/v2.6.0...v2.6.1
 [v2.6.0]: https://github.com/bbyybb/lan-file-browser/compare/v2.2.0...v2.6.0
 [v2.2.0]: https://github.com/bbyybb/lan-file-browser/compare/v2.1.2...v2.2.0
 [v2.1.2]: https://github.com/bbyybb/lan-file-browser/compare/v2.1.1...v2.1.2

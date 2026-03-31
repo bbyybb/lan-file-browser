@@ -179,7 +179,7 @@ Seeing the following screen means the server started successfully:
 
 ```
 ======================================================
-  [File Browser v2.6.0] started
+  [File Browser v2.6.1] started
 ======================================================
   Local:    http://localhost:25600
   Phone:    http://192.168.1.100:25600    ← The address to open on your phone
