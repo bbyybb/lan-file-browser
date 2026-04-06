@@ -94,8 +94,8 @@ git push origin fix/some-bug
 # 发布版本时
 git checkout main
 git pull origin main
-git tag v2.x.x
-git push origin v2.x.x    # 触发 CI 自动构建和发布
+git tag v1.x.x
+git push origin v1.x.x    # 触发 CI 自动构建和发布
 ```
 
 ### PR 合并方式
@@ -228,8 +228,8 @@ git push origin fix/some-bug
 # Release workflow
 git checkout main
 git pull origin main
-git tag v2.x.x
-git push origin v2.x.x    # triggers CI auto-build and release
+git tag v1.x.x
+git push origin v1.x.x    # triggers CI auto-build and release
 ```
 
 ### PR Merge Strategy

@@ -9,7 +9,7 @@ assignees: ''
 **环境信息 / Environment**
 - 操作系统 / OS: [e.g. Windows 11, macOS 14, Ubuntu 22.04]
 - Python 版本 / Python version: [e.g. 3.11.5]（使用可执行文件时填 N/A）
-- 程序版本 / App version: [e.g. v2.1, 或 commit hash]
+- 程序版本 / App version: [e.g. v1.0.0, 或 commit hash]
 - 浏览器 / Browser: [e.g. Chrome 120, Safari 17]
 - 访问设备 / Device: [e.g. iPhone 15, Android 14]
 

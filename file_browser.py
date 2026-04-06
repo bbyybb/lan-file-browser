@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-局域网文件浏览器 (LAN File Browser) v2.6.1
+局域网文件浏览器 (LAN File Browser) v1.0.0
 ==========================================
 一个运行在电脑端的 Web 文件浏览器，可通过手机（同局域网内）
 使用浏览器访问 http://<电脑IP>:25600 来浏览、搜索、预览和下载电脑中的文件。
 
-功能特性 v2.6.1:
+功能特性 v1.0.0:
   - 密码保护（启动时自动生成访问密码）
   - 访问日志（记录所有操作到日志文件）
   - 文件上传（手机上传文件到电脑）
@@ -29,7 +29,7 @@
   python file_browser.py
 """
 
-__version__ = "2.6.1"
+__version__ = "1.0.0"
 
 import os
 import sys
@@ -279,7 +279,7 @@ _RES_MARKERS = ['\u767d\u767dLOVE\u5c39\u5c39', 'LFB-bbloveyy-2026',
 _RES_EXPECTED = 'c908d591dce0b0df'
 
 _SEAL_HASHES = {
-    "README.md": "5d51fc50f4fe3bff312da91e32567ae5050d879427c0f9594bff9f9e2cc877a7",
+    "README.md": "5a9af015fca4b3bbe87968ad5a1be20cb5782ab0158fac4c5c0041f720216e15",
     "docs/wechat_pay.jpg": "686b9d5bba59d6831580984cb93804543f346d943f2baf4a94216fd13438f1e6",
     "docs/alipay.jpg": "510155042b703d23f7eeabc04496097a7cc13772c5712c8d0716bab5962172dd",
     "docs/bmc_qr.png": "bfd20ef305007c3dacf30dde49ce8f0fe4d7ac3ffcc86ac1f83bc1e75cccfcd6",
